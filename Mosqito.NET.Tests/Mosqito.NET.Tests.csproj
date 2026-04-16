@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Mosqito.Tests</RootNamespace>
+    <AssemblyName>Mosqito.NET.Tests</AssemblyName>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector" Version="6.0.3">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mosqito.NET\Mosqito.NET.csproj" />
+  </ItemGroup>
+
+  <!-- Reference audio and CSV assets from the Python MoSQITo repo -->
+  <ItemGroup>
+    <None Include="..\Resources\MoSQITo-master\tests\input\**\*"
+          Link="tests\input\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Head-to-head Python golden files -->
+  <ItemGroup>
+    <None Include="ReferenceData\Golden\**\*.json"
+          Link="ReferenceData\Golden\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Validation reference data (ISO 532-1 Annex B, DIN 45692, Daniel-Weber, ECMA-418-2) -->
+  <ItemGroup>
+    <None Include="..\Resources\MoSQITo-master\validations\sq_metrics\loudness_zwst\input\ISO_532_1\**\*"
+          Link="ReferenceData\Validation\LoudnessZwst\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\MoSQITo-master\validations\sq_metrics\loudness_zwtv\input\**\*"
+          Link="ReferenceData\Validation\LoudnessZwtv\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\MoSQITo-master\validations\sq_metrics\roughness_dw\input\**\*"
+          Link="ReferenceData\Validation\RoughnessDw\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\MoSQITo-master\validations\sq_metrics\sharpness_din\input\**\*"
+          Link="ReferenceData\Validation\SharpnessDin\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,20 @@
+{
+  "arrays_1d": {
+    "frequencies": [],
+    "prominence": [],
+    "values": []
+  },
+  "arrays_2d": null,
+  "function": "pr_ecma_freq",
+  "metadata": {},
+  "mosqito_version": "1.2.1",
+  "numpy_version": "2.0.1",
+  "python_version": "3.12.5",
+  "scalars": {
+    "n_tones": 0,
+    "prom_count": 0,
+    "t_total": 0.0
+  },
+  "wav": "Test signal 10 (tone pulse 1 kHz 10 ms 70 dB).wav",
+  "wav_calib": 2.8284271247461903
+}

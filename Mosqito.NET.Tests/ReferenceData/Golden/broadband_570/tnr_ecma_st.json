@@ -1,0 +1,20 @@
+{
+  "arrays_1d": {
+    "frequencies": [],
+    "prominence": [],
+    "values": []
+  },
+  "arrays_2d": null,
+  "function": "tnr_ecma_st",
+  "metadata": {},
+  "mosqito_version": "1.2.1",
+  "numpy_version": "2.0.1",
+  "python_version": "3.12.5",
+  "scalars": {
+    "n_tones": 0,
+    "prom_count": 0,
+    "t_total": 0.0
+  },
+  "wav": "broadband_570.wav",
+  "wav_calib": 1.0
+}

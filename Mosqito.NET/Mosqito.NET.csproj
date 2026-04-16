@@ -1,0 +1,31 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Optimize>true</Optimize>
+    <AssemblyName>Mosqito.NET</AssemblyName>
+    <RootNamespace>Mosqito</RootNamespace>
+    <Version>1.2.1</Version>
+    <Authors>Mosqito.NET Contributors</Authors>
+    <Description>High-performance .NET 8 port of the MoSQITo sound quality metrics library (ISO 532-1, ECMA-418-2, DIN 45692, ANSI S3.5).</Description>
+    <Copyright>Original MoSQITo library: Copyright 2021 MoSQITo Developers (Apache-2.0). C# port: Mosqito.NET Contributors.</Copyright>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Mosqito.NET.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>

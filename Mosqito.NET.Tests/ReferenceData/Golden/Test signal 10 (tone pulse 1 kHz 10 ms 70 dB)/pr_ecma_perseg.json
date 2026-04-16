@@ -1,0 +1,28 @@
+{
+  "arrays_1d": {
+    "t_per_seg": [
+      0.0,
+      0.0
+    ],
+    "time_axis": [
+      0.24998958333333332,
+      0.7499895833333333
+    ]
+  },
+  "arrays_2d": null,
+  "function": "pr_ecma_perseg",
+  "metadata": {
+    "nperseg": 24000,
+    "overlap": 0
+  },
+  "mosqito_version": "1.2.1",
+  "numpy_version": "2.0.1",
+  "python_version": "3.12.5",
+  "scalars": {
+    "nseg": 2,
+    "prom_count": 0,
+    "t_total_max": 0.0
+  },
+  "wav": "Test signal 10 (tone pulse 1 kHz 10 ms 70 dB).wav",
+  "wav_calib": 2.8284271247461903
+}

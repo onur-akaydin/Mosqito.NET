@@ -1,0 +1,14 @@
+{
+  "arrays_1d": null,
+  "arrays_2d": null,
+  "function": "sharpness_din_st",
+  "metadata": {},
+  "mosqito_version": "1.2.1",
+  "numpy_version": "2.0.1",
+  "python_version": "3.12.5",
+  "scalars": {
+    "S": 1.0113537013986513
+  },
+  "wav": "Test signal 3 (1 kHz 60 dB)_44100Hz.wav",
+  "wav_calib": 2.8284271247461903
+}

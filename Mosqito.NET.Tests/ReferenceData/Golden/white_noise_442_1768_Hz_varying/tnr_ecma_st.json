@@ -1,0 +1,29 @@
+{
+  "arrays_1d": {
+    "frequencies": [
+      442.3333333333333,
+      1768.3333333333333
+    ],
+    "prominence": [
+      true,
+      true
+    ],
+    "values": [
+      30.30903777517664,
+      11.415008152540395
+    ]
+  },
+  "arrays_2d": null,
+  "function": "tnr_ecma_st",
+  "metadata": {},
+  "mosqito_version": "1.2.1",
+  "numpy_version": "2.0.1",
+  "python_version": "3.12.5",
+  "scalars": {
+    "n_tones": 2,
+    "prom_count": 2,
+    "t_total": 30.36470441971845
+  },
+  "wav": "white_noise_442_1768_Hz_varying.wav",
+  "wav_calib": 0.01
+}

@@ -1,0 +1,7 @@
+{
+  "error": "1/3 octave band value exceed 120 dB, for which the Zwicker method is no longer valid.",
+  "function": "loudness_zwst_freq",
+  "traceback": "Traceback (most recent call last):\n  File \"E:\\ClaudeProjects\\Common\\Mosqito.NET\\Resources\\tools\\generate_mosqito_goldens.py\", line 469, in main\n    payload = runner(sig.copy(), fs, wav_name, calib)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"E:\\ClaudeProjects\\Common\\Mosqito.NET\\Resources\\tools\\generate_mosqito_goldens.py\", line 139, in run_loudness_zwst_freq\n    N, N_spec, bark = loudness_zwst_freq(spec, freqs)\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"E:\\ClaudeProjects\\Common\\Mosqito.NET\\Resources\\MoSQITo-master\\mosqito\\sq_metrics\\loudness\\loudness_zwst\\loudness_zwst_freq.py\", line 168, in loudness_zwst_freq\n    Nm = _main_loudness(spec_third, field_type)\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"E:\\ClaudeProjects\\Common\\Mosqito.NET\\Resources\\MoSQITo-master\\mosqito\\sq_metrics\\loudness\\loudness_zwst\\_main_loudness.py\", line 39, in _main_loudness\n    raise ValueError(\nValueError: 1/3 octave band value exceed 120 dB, for which the Zwicker method is no longer valid.\n",
+  "wav": "Test signal 3 (1 kHz 60 dB)_44100Hz.wav",
+  "wav_calib": 2.8284271247461903
+}

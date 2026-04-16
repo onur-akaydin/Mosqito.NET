@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Mosqito.NET/Mosqito.NET.csproj" />
+  <Project Path="Mosqito.NET.Tests/Mosqito.NET.Tests.csproj" />
+</Solution>

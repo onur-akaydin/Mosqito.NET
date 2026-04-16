@@ -1,0 +1,7 @@
+{
+  "error": "index 47 is out of bounds for axis 0 with size 47",
+  "function": "roughness_dw_freq",
+  "traceback": "Traceback (most recent call last):\n  File \"E:\\ClaudeProjects\\Common\\Mosqito.NET\\Resources\\tools\\generate_mosqito_goldens.py\", line 469, in main\n    payload = runner(sig.copy(), fs, wav_name, calib)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"E:\\ClaudeProjects\\Common\\Mosqito.NET\\Resources\\tools\\generate_mosqito_goldens.py\", line 243, in run_roughness_dw_freq\n    R, R_spec, bark = roughness_dw_freq(spec, freqs)\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"E:\\ClaudeProjects\\Common\\Mosqito.NET\\Resources\\MoSQITo-master\\mosqito\\sq_metrics\\roughness\\roughness_dw\\roughness_dw_freq.py\", line 134, in roughness_dw_freq\n    R, R_spec, bark_axis = _roughness_dw_main_calc(\n                           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"E:\\ClaudeProjects\\Common\\Mosqito.NET\\Resources\\MoSQITo-master\\mosqito\\sq_metrics\\roughness\\roughness_dw\\_roughness_dw_main_calc.py\", line 108, in _roughness_dw_main_calc\n    if sl > minExcitDB[j]:\n            ~~~~~~~~~~^^^\nIndexError: index 47 is out of bounds for axis 0 with size 47\n",
+  "wav": "white_noise_442_1768_Hz_stationary.wav",
+  "wav_calib": 0.01
+}

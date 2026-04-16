@@ -1,0 +1,14 @@
+{
+  "arrays_1d": null,
+  "arrays_2d": null,
+  "function": "sharpness_din_st",
+  "metadata": {},
+  "mosqito_version": "1.2.1",
+  "numpy_version": "2.0.1",
+  "python_version": "3.12.5",
+  "scalars": {
+    "S": 2.8109055124455864
+  },
+  "wav": "broadband_570.wav",
+  "wav_calib": 1.0
+}

@@ -1,0 +1,25 @@
+# Build outputs
+bin/
+obj/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# dotnet
+*.nupkg
+*.snupkg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code agent files
+.claude/
+CLAUDE.md
+
+# Resources folder (large Python MoSQITo source, not part of this repo)
+Resources/
