@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
@@ -16,6 +17,13 @@ public static class Butter
 {
     private const double TwoPi = 2.0 * Math.PI;
 
+    // Design cache keyed by (FilterType, order, w1*1e9, w2*1e9) — design is deterministic.
+    private static readonly ConcurrentDictionary<(int type, int order, long w1, long w2), double[,]>
+        _designCache = new();
+
+    // Quantise a frequency to a stable long key (9 significant digits).
+    private static long FreqKey(double w) => (long)Math.Round(w * 1e9);
+
     // ------------------------------------------------------------------
     // Public entry points
     // ------------------------------------------------------------------
@@ -31,7 +39,8 @@ public static class Butter
     {
         if (wLow <= 0 || wHigh >= 1 || wLow >= wHigh)
             throw new ArgumentException($"Invalid cutoff frequencies: wLow={wLow}, wHigh={wHigh}. Must satisfy 0 < wLow < wHigh < 1.");
-        return IirFilter(order, wLow, wHigh, FilterType.Bandpass);
+        return _designCache.GetOrAdd((0, order, FreqKey(wLow), FreqKey(wHigh)),
+            static k => IirFilter(k.order, k.w1 * 1e-9, k.w2 * 1e-9, FilterType.Bandpass));
     }
 
     /// <summary>Design a Butterworth low-pass filter.</summary>
@@ -39,7 +48,8 @@ public static class Butter
     {
         if (wCutoff <= 0 || wCutoff >= 1)
             throw new ArgumentException($"Invalid cutoff: wCutoff={wCutoff}. Must satisfy 0 < wCutoff < 1.");
-        return IirFilter(order, wCutoff, 0, FilterType.Lowpass);
+        return _designCache.GetOrAdd((1, order, FreqKey(wCutoff), 0L),
+            static k => IirFilter(k.order, k.w1 * 1e-9, 0, FilterType.Lowpass));
     }
 
     /// <summary>Design a Butterworth high-pass filter.</summary>
@@ -47,7 +57,8 @@ public static class Butter
     {
         if (wCutoff <= 0 || wCutoff >= 1)
             throw new ArgumentException($"Invalid cutoff: wCutoff={wCutoff}. Must satisfy 0 < wCutoff < 1.");
-        return IirFilter(order, wCutoff, 0, FilterType.Highpass);
+        return _designCache.GetOrAdd((2, order, FreqKey(wCutoff), 0L),
+            static k => IirFilter(k.order, k.w1 * 1e-9, 0, FilterType.Highpass));
     }
 
     /// <summary>Design a Butterworth band-stop (notch) filter.</summary>
@@ -55,7 +66,8 @@ public static class Butter
     {
         if (wLow <= 0 || wHigh >= 1 || wLow >= wHigh)
             throw new ArgumentException($"Invalid cutoff frequencies: wLow={wLow}, wHigh={wHigh}.");
-        return IirFilter(order, wLow, wHigh, FilterType.Bandstop);
+        return _designCache.GetOrAdd((3, order, FreqKey(wLow), FreqKey(wHigh)),
+            static k => IirFilter(k.order, k.w1 * 1e-9, k.w2 * 1e-9, FilterType.Bandstop));
     }
 
     // ------------------------------------------------------------------

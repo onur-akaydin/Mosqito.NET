@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Runtime.CompilerServices;
 
 namespace Mosqito.Dsp;
@@ -30,88 +31,110 @@ public static class FindPeaks
     /// <summary>
     /// Finds all local maxima in <paramref name="x"/> subject to optional constraints.
     /// Matches scipy.signal.find_peaks behaviour for the supported parameters.
+    /// Uses pooled int[] buffers to avoid per-call heap allocation.
     /// </summary>
-    /// <param name="x">Input 1-D array.</param>
-    /// <param name="height">Minimum peak height (inclusive). Null = no constraint.</param>
-    /// <param name="distance">Minimum horizontal distance between peaks. Null = no constraint.</param>
-    /// <param name="prominence">Minimum prominence. Null = no constraint.</param>
     public static PeakResult Find(
         ReadOnlySpan<double> x,
         double? height = null,
         int? distance = null,
         double? prominence = null)
     {
-        // Copy to array so it can be captured in lambdas and passed to helper methods
-        double[] xArr = x.ToArray();
-        int n = xArr.Length;
-        var candidates = new List<int>();
+        int n = x.Length;
+        if (n < 3) return PeakResult.Empty;
 
-        // Find all local maxima (strictly greater than both neighbours)
-        for (int i = 1; i < n - 1; i++)
+        // Rent a scratch buffer large enough for all candidate indices (worst case n-2).
+        int[] candBuf = ArrayPool<int>.Shared.Rent(n);
+        int candCount = 0;
+
+        try
         {
-            if (xArr[i] > xArr[i - 1] && xArr[i] > xArr[i + 1])
-                candidates.Add(i);
-        }
+            // Local maxima — strictly greater than both neighbours
+            for (int i = 1; i < n - 1; i++)
+                if (x[i] > x[i - 1] && x[i] > x[i + 1])
+                    candBuf[candCount++] = i;
 
-        // Filter by height
-        if (height.HasValue)
-        {
-            double h = height.Value;
-            candidates.RemoveAll(i => xArr[i] < h);
-        }
-
-        // Filter by minimum distance (keep the tallest peak within each distance window)
-        if (distance.HasValue && distance.Value > 1 && candidates.Count > 1)
-        {
-            candidates = FilterByDistance(xArr, candidates, distance.Value);
-        }
-
-        // Compute prominences and optionally filter
-        double[] proms = ComputeProminences(xArr, candidates);
-
-        if (prominence.HasValue)
-        {
-            double minProm = prominence.Value;
-            var filtered = new List<int>();
-            var filteredProms = new List<double>();
-            for (int i = 0; i < candidates.Count; i++)
+            // Filter by height (in-place compaction)
+            if (height.HasValue)
             {
-                if (proms[i] >= minProm)
-                {
-                    filtered.Add(candidates[i]);
-                    filteredProms.Add(proms[i]);
-                }
+                double h = height.Value;
+                int w = 0;
+                for (int i = 0; i < candCount; i++)
+                    if (x[candBuf[i]] >= h) candBuf[w++] = candBuf[i];
+                candCount = w;
             }
-            candidates = filtered;
-            proms = filteredProms.ToArray();
+
+            // Filter by minimum distance (keep tallest within each window)
+            if (distance.HasValue && distance.Value > 1 && candCount > 1)
+                candCount = FilterByDistance(x, candBuf, candCount, distance.Value);
+
+            // Compute prominences
+            double[] proms = new double[candCount];
+            ComputeProminences(x, candBuf, candCount, proms);
+
+            // Filter by prominence (in-place compaction)
+            if (prominence.HasValue)
+            {
+                double minProm = prominence.Value;
+                int w = 0;
+                for (int i = 0; i < candCount; i++)
+                {
+                    if (proms[i] >= minProm)
+                    {
+                        candBuf[w] = candBuf[i];
+                        proms[w]   = proms[i];
+                        w++;
+                    }
+                }
+                candCount = w;
+                if (proms.Length != candCount)
+                    Array.Resize(ref proms, candCount);
+            }
+
+            int[] idxArr  = new int[candCount];
+            double[] heights = new double[candCount];
+            for (int i = 0; i < candCount; i++)
+            {
+                idxArr[i]  = candBuf[i];
+                heights[i] = x[candBuf[i]];
+            }
+
+            return new PeakResult { Indices = idxArr, Heights = heights, Prominences = proms };
         }
-
-        int[] idxArr = candidates.ToArray();
-        double[] heights = new double[idxArr.Length];
-        for (int i = 0; i < idxArr.Length; i++) heights[i] = xArr[idxArr[i]];
-
-        return new PeakResult { Indices = idxArr, Heights = heights, Prominences = proms };
+        finally
+        {
+            ArrayPool<int>.Shared.Return(candBuf);
+        }
     }
 
     // ------------------------------------------------------------------
-    // Prominences  (matches scipy.signal.peak_prominences)
+    // Prominences — public legacy overload (double[] + List<int>)
     // ------------------------------------------------------------------
 
     /// <summary>
     /// Computes the prominence of each peak at the given indices.
-    /// Prominence = peak height - the highest minimum within the surrounding contour bases.
+    /// Legacy overload kept for API compatibility.
     /// </summary>
     public static double[] ComputeProminences(double[] x, List<int> peakIndices)
     {
-        int n = x.Length;
         double[] proms = new double[peakIndices.Count];
+        int[] tempArr = peakIndices.ToArray();
+        ComputeProminences(x, tempArr, peakIndices.Count, proms);
+        return proms;
+    }
 
-        for (int pi = 0; pi < peakIndices.Count; pi++)
+    // ------------------------------------------------------------------
+    // Internal span-based helpers
+    // ------------------------------------------------------------------
+
+    private static void ComputeProminences(ReadOnlySpan<double> x, ReadOnlySpan<int> cand,
+        int count, double[] proms)
+    {
+        int n = x.Length;
+        for (int pi = 0; pi < count; pi++)
         {
-            int idx = peakIndices[pi];
+            int idx = cand[pi];
             double peakHeight = x[idx];
 
-            // Find left base: walk left until signal ≥ peak or array boundary
             double leftMin = peakHeight;
             int left = idx - 1;
             while (left >= 0)
@@ -121,7 +144,6 @@ public static class FindPeaks
                 left--;
             }
 
-            // Find right base: walk right
             double rightMin = peakHeight;
             int right = idx + 1;
             while (right < n)
@@ -131,36 +153,38 @@ public static class FindPeaks
                 right++;
             }
 
-            double baseHeight = Math.Max(leftMin, rightMin);
-            proms[pi] = peakHeight - baseHeight;
+            proms[pi] = peakHeight - Math.Max(leftMin, rightMin);
         }
-
-        return proms;
     }
 
-    // ------------------------------------------------------------------
-    // Distance filtering (keep tallest in each window)
-    // ------------------------------------------------------------------
-    private static List<int> FilterByDistance(
-        double[] x, List<int> peaks, int distance)
+    private static int FilterByDistance(ReadOnlySpan<double> x, int[] cand, int count,
+        int distance)
     {
-        bool[] keep = new bool[peaks.Count];
-        keep.AsSpan().Fill(true);
+        // keep[] fits on stack for typical peak counts
+        bool[] keep = ArrayPool<bool>.Shared.Rent(count);
+        keep.AsSpan(0, count).Fill(true);
 
-        for (int i = 0; i < peaks.Count; i++)
+        try
         {
-            if (!keep[i]) continue;
-            for (int j = i + 1; j < peaks.Count; j++)
+            for (int i = 0; i < count; i++)
             {
-                if (peaks[j] - peaks[i] >= distance) break;
-                if (x[peaks[i]] >= x[peaks[j]]) keep[j] = false;
-                else { keep[i] = false; break; }
+                if (!keep[i]) continue;
+                for (int j = i + 1; j < count; j++)
+                {
+                    if (cand[j] - cand[i] >= distance) break;
+                    if (x[cand[i]] >= x[cand[j]]) keep[j] = false;
+                    else { keep[i] = false; break; }
+                }
             }
-        }
 
-        var result = new List<int>();
-        for (int i = 0; i < peaks.Count; i++)
-            if (keep[i]) result.Add(peaks[i]);
-        return result;
+            int w = 0;
+            for (int i = 0; i < count; i++)
+                if (keep[i]) cand[w++] = cand[i];
+            return w;
+        }
+        finally
+        {
+            ArrayPool<bool>.Shared.Return(keep);
+        }
     }
 }

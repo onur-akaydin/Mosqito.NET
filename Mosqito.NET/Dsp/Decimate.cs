@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Collections.Concurrent;
+using System.Threading.Tasks;
 
 namespace Mosqito.Dsp;
 
@@ -9,6 +11,8 @@ namespace Mosqito.Dsp;
 /// </summary>
 public static class Decimate
 {
+    // SOS design cache keyed by (order, decimation factor) — design is deterministic.
+    private static readonly ConcurrentDictionary<(int order, int q), double[,]> _sosCache = new();
     /// <summary>
     /// Decimates <paramref name="input"/> by factor <paramref name="q"/>.
     /// Uses an 8th-order IIR Chebyshev-I anti-aliasing filter (scipy default)
@@ -22,9 +26,10 @@ public static class Decimate
     {
         if (q < 2) throw new ArgumentOutOfRangeException(nameof(q), "Decimation factor must be ≥ 2.");
 
-        // Design Chebyshev-I LP anti-aliasing filter
-        double wCutoff = 0.8 / q;   // normalised cutoff (scipy: Wn = 0.8/q relative to Nyquist)
-        double[,] sos = ChebType1Sos(order: 8, wCutoff: wCutoff);
+        // Design (or fetch cached) Chebyshev-I LP anti-aliasing filter
+        double wCutoff = 0.8 / q;
+        double[,] sos = _sosCache.GetOrAdd((8, q), static key =>
+            ChebType1Sos(order: key.order, wCutoff: 0.8 / key.q));
 
         // Forward-backward filter (zero phase)
         double[] filtered = SosFilter.FiltFilt(sos, input);
@@ -37,23 +42,26 @@ public static class Decimate
         return output;
     }
 
-    /// <summary>Applies decimation along axis 0 of a 2-D array (each column independently).</summary>
+    /// <summary>Applies decimation along axis 0 of a 2-D array (each column independently).
+    /// Columns are processed in parallel.</summary>
     public static double[,] Apply2D(double[,] input, int q)
     {
         int nSamples = input.GetLength(0);
         int nCols    = input.GetLength(1);
         int nOut = (nSamples + q - 1) / q;
-
         double[,] output = new double[nOut, nCols];
-        double[] col    = new double[nSamples];
-        double[] colOut;
 
-        for (int c = 0; c < nCols; c++)
-        {
-            for (int r = 0; r < nSamples; r++) col[r] = input[r, c];
-            colOut = Apply(col, q);
-            for (int r = 0; r < nOut; r++) output[r, c] = colOut[r];
-        }
+        Parallel.For(0, nCols,
+            () => new double[nSamples],
+            (c, _, col) =>
+            {
+                for (int r = 0; r < nSamples; r++) col[r] = input[r, c];
+                double[] colOut = Apply(col, q);
+                for (int r = 0; r < nOut; r++) output[r, c] = colOut[r];
+                return col;
+            },
+            _ => { });
+
         return output;
     }
 

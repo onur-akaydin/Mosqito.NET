@@ -91,8 +91,10 @@ public static class VectorMath
     public static void Sqrt(ReadOnlySpan<double> x, Span<double> output)
     {
         if (output.Length < x.Length) throw new ArgumentException("Output too short.");
-        // Vector<double> sqrt not available universally; scalar loop
-        for (int i = 0; i < x.Length; i++) output[i] = Math.Sqrt(x[i]);
+        int i = 0, vLen = x.Length - x.Length % VWidth;
+        for (; i < vLen; i += VWidth)
+            Vector.SquareRoot(new Vector<double>(x.Slice(i, VWidth))).CopyTo(output.Slice(i, VWidth));
+        for (; i < x.Length; i++) output[i] = Math.Sqrt(x[i]);
     }
 
     /// <summary>Returns element-wise sqrt as a new array.</summary>
@@ -150,8 +152,15 @@ public static class VectorMath
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double Rms(ReadOnlySpan<double> x)
     {
-        double sumSq = 0.0;
-        for (int i = 0; i < x.Length; i++) sumSq += x[i] * x[i];
+        int i = 0, vLen = x.Length - x.Length % VWidth;
+        var acc = Vector<double>.Zero;
+        for (; i < vLen; i += VWidth)
+        {
+            var v = new Vector<double>(x.Slice(i, VWidth));
+            acc += v * v;
+        }
+        double sumSq = Vector.Dot(acc, Vector<double>.One);
+        for (; i < x.Length; i++) sumSq += x[i] * x[i];
         return Math.Sqrt(sumSq / x.Length);
     }
 

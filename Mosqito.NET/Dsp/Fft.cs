@@ -11,6 +11,25 @@ namespace Mosqito.Dsp;
 /// </summary>
 public static class Fft
 {
+    // Per-thread scratch Complex[] buffers keyed by length — allocated once per (thread, size).
+    [ThreadStatic]
+    private static Dictionary<int, Complex[]>? _threadBufs;
+
+    /// <summary>
+    /// Returns a thread-local <see cref="Complex"/> scratch buffer of exactly <paramref name="n"/>
+    /// elements. The same array is reused on every call from the same thread with the same length.
+    /// Callers must not hold a reference across an await or Parallel.For boundary.
+    /// </summary>
+    internal static Complex[] GetThreadBuf(int n)
+    {
+        _threadBufs ??= new Dictionary<int, Complex[]>();
+        if (!_threadBufs.TryGetValue(n, out var buf))
+        {
+            buf = new Complex[n];
+            _threadBufs[n] = buf;
+        }
+        return buf;
+    }
     // ------------------------------------------------------------------
     // Forward real FFT  (matches numpy.fft.rfft)
     // Returns N/2+1 complex bins.
@@ -36,27 +55,18 @@ public static class Fft
 
     /// <summary>
     /// Writes one-sided FFT output into <paramref name="output"/> (length must be ≥ N/2+1).
+    /// Uses a thread-local scratch buffer — do not call across await or Parallel.For boundaries
+    /// without ensuring each worker thread uses its own call.
     /// </summary>
     public static void Rfft(ReadOnlySpan<double> input, Span<Complex> output)
     {
         int n = input.Length;
         int half = n / 2 + 1;
         if (output.Length < half) throw new ArgumentException("Output too short.", nameof(output));
-
-        Complex[] buf = ArrayPool<Complex>.Shared.Rent(n);
-        try
-        {
-            for (int i = 0; i < n; i++) buf[i] = new Complex(input[i], 0.0);
-            // Fourier.Forward requires a contiguous array slice, not Span
-            Complex[] slice = new Complex[n];
-            Array.Copy(buf, slice, n);
-            Fourier.Forward(slice, FourierOptions.AsymmetricScaling);
-            for (int i = 0; i < half; i++) output[i] = slice[i];
-        }
-        finally
-        {
-            ArrayPool<Complex>.Shared.Return(buf);
-        }
+        Complex[] buf = GetThreadBuf(n);
+        for (int i = 0; i < n; i++) buf[i] = new Complex(input[i], 0.0);
+        Fourier.Forward(buf, FourierOptions.AsymmetricScaling);
+        for (int i = 0; i < half; i++) output[i] = buf[i];
     }
 
     // ------------------------------------------------------------------
@@ -99,12 +109,9 @@ public static class Fft
         int half = spectrum.Length;
         if (nOutput < 0) nOutput = 2 * (half - 1);
 
-        Complex[] buf = new Complex[nOutput];
-        // Fill positive-frequency half.
+        Complex[] buf = GetThreadBuf(nOutput);
         for (int i = 0; i < half && i < nOutput; i++) buf[i] = spectrum[i];
-        // Mirror conjugate for negative frequencies.
         for (int i = half; i < nOutput; i++) buf[i] = Complex.Conjugate(buf[nOutput - i]);
-        // Inverse FFT.
         Fourier.Inverse(buf, FourierOptions.AsymmetricScaling);
         double[] result = new double[nOutput];
         for (int i = 0; i < nOutput; i++) result[i] = buf[i].Real;

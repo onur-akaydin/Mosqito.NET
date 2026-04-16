@@ -40,6 +40,37 @@ public static class Interp
             output[i] = Linear(x[i], xp, yp);
     }
 
+    /// <summary>
+    /// Piecewise-linear interpolation for a <b>monotonically non-decreasing</b> batch of
+    /// query points using a two-pointer scan (O(n+m) vs O(n log m)).
+    /// </summary>
+    public static void LinearMonotonic(ReadOnlySpan<double> x, ReadOnlySpan<double> xp,
+        ReadOnlySpan<double> yp, Span<double> output)
+    {
+        if (output.Length < x.Length) throw new ArgumentException("Output too short.", nameof(output));
+        int m = xp.Length;
+        int lo = 0;
+        for (int i = 0; i < x.Length; i++)
+        {
+            double xi = x[i];
+            if (xi <= xp[0])    { output[i] = yp[0]; continue; }
+            if (xi >= xp[m - 1]) { output[i] = yp[m - 1]; continue; }
+            // advance lo until xp[lo+1] > xi
+            while (lo < m - 2 && xp[lo + 1] <= xi) lo++;
+            double t = (xi - xp[lo]) / (xp[lo + 1] - xp[lo]);
+            output[i] = yp[lo] + t * (yp[lo + 1] - yp[lo]);
+        }
+    }
+
+    /// <inheritdoc cref="LinearMonotonic(ReadOnlySpan{double},ReadOnlySpan{double},ReadOnlySpan{double},Span{double})"/>
+    public static double[] LinearMonotonic(ReadOnlySpan<double> x, ReadOnlySpan<double> xp,
+        ReadOnlySpan<double> yp)
+    {
+        double[] result = new double[x.Length];
+        LinearMonotonic(x, xp, yp, result);
+        return result;
+    }
+
     /// <summary>Returns a new array with linearly interpolated values.</summary>
     public static double[] Linear(ReadOnlySpan<double> x, ReadOnlySpan<double> xp,
         ReadOnlySpan<double> yp)
@@ -101,6 +132,44 @@ public static class Interp
         for (int i = 0; i < x.Length; i++)
             result[i] = PchipEvalOne(x[i], xi, yi, d);
         return result;
+    }
+
+    /// <summary>
+    /// Reusable PCHIP spline — precomputes Hermite derivatives once and exposes fast
+    /// repeated evaluation at arbitrary query points. Use when the same data axis is
+    /// queried many times (e.g., 53× per-band calls with the same time axis).
+    /// </summary>
+    public sealed class PchipSpline
+    {
+        private readonly double[] _xi;
+        private readonly double[] _yi;
+        private readonly double[] _d;
+
+        /// <summary>Constructs the spline and precomputes derivatives.</summary>
+        public PchipSpline(double[] xi, double[] yi)
+        {
+            _xi = xi;
+            _yi = yi;
+            _d  = PchipDerivatives(xi, yi);
+        }
+
+        /// <summary>Evaluates the spline at a single query point.</summary>
+        public double Evaluate(double x) => PchipEvalOne(x, _xi, _yi, _d);
+
+        /// <summary>Evaluates the spline at each query point, writing results into <paramref name="output"/>.</summary>
+        public void Evaluate(ReadOnlySpan<double> x, Span<double> output)
+        {
+            if (output.Length < x.Length) throw new ArgumentException("Output too short.", nameof(output));
+            for (int i = 0; i < x.Length; i++) output[i] = PchipEvalOne(x[i], _xi, _yi, _d);
+        }
+
+        /// <summary>Evaluates the spline at each query point and returns a new array.</summary>
+        public double[] Evaluate(ReadOnlySpan<double> x)
+        {
+            double[] result = new double[x.Length];
+            Evaluate(x, result);
+            return result;
+        }
     }
 
     /// <summary>

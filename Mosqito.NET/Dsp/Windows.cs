@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
 namespace Mosqito.Dsp;
@@ -5,9 +6,16 @@ namespace Mosqito.Dsp;
 /// <summary>
 /// Window functions used throughout Mosqito.NET.
 /// All Fill* methods write into a caller-supplied span to avoid allocation.
+/// Allocating wrappers (Hann, Hamming, Blackman, VonHannEcma) are cached — callers
+/// must treat the returned arrays as <b>read-only</b>; never mutate them.
 /// </summary>
 public static class Windows
 {
+    // Cached by (length, kind-tag). Returned arrays are immutable shared instances.
+    private static readonly ConcurrentDictionary<(int n, int kind), double[]> _cache = new();
+
+    private static double[] Cached(int n, int kind, Func<int, double[]> factory) =>
+        _cache.GetOrAdd((n, kind), static (key, f) => f(key.n), factory);
     // ------------------------------------------------------------------
     // Hann (Hanning)  — matches numpy.hanning(N)
     // w[n] = 0.5 * (1 - cos(2π*n/(N-1)))
@@ -23,13 +31,8 @@ public static class Windows
             output[i] = 0.5 * (1.0 - Math.Cos(scale * i));
     }
 
-    /// <summary>Allocates and returns a Hann window of length <paramref name="n"/>.</summary>
-    public static double[] Hann(int n)
-    {
-        double[] w = new double[n];
-        FillHann(w);
-        return w;
-    }
+    /// <summary>Returns a cached Hann window of length <paramref name="n"/> (read-only).</summary>
+    public static double[] Hann(int n) => Cached(n, 0, static len => { var w = new double[len]; FillHann(w); return w; });
 
     // ------------------------------------------------------------------
     // Hamming  — matches numpy.hamming(N)
@@ -46,13 +49,8 @@ public static class Windows
             output[i] = 0.54 - 0.46 * Math.Cos(scale * i);
     }
 
-    /// <summary>Allocates and returns a Hamming window of length <paramref name="n"/>.</summary>
-    public static double[] Hamming(int n)
-    {
-        double[] w = new double[n];
-        FillHamming(w);
-        return w;
-    }
+    /// <summary>Returns a cached Hamming window of length <paramref name="n"/> (read-only).</summary>
+    public static double[] Hamming(int n) => Cached(n, 1, static len => { var w = new double[len]; FillHamming(w); return w; });
 
     // ------------------------------------------------------------------
     // Blackman  — matches numpy.blackman(N)
@@ -70,13 +68,8 @@ public static class Windows
             output[i] = 0.42 - 0.5 * Math.Cos(s1 * i) + 0.08 * Math.Cos(s2 * i);
     }
 
-    /// <summary>Allocates and returns a Blackman window of length <paramref name="n"/>.</summary>
-    public static double[] Blackman(int n)
-    {
-        double[] w = new double[n];
-        FillBlackman(w);
-        return w;
-    }
+    /// <summary>Returns a cached Blackman window of length <paramref name="n"/> (read-only).</summary>
+    public static double[] Blackman(int n) => Cached(n, 2, static len => { var w = new double[len]; FillBlackman(w); return w; });
 
     // ------------------------------------------------------------------
     // Rectangular (boxcar)
@@ -139,13 +132,8 @@ public static class Windows
             output[i] = 0.5 * (1.0 - Math.Cos(2.0 * Math.PI * (i + 1) / denom));
     }
 
-    /// <summary>Allocates and returns an ECMA-418-2 Von Hann window of length <paramref name="n"/>.</summary>
-    public static double[] VonHannEcma(int n)
-    {
-        double[] w = new double[n];
-        FillVonHannEcma(w);
-        return w;
-    }
+    /// <summary>Returns a cached ECMA-418-2 Von Hann window of length <paramref name="n"/> (read-only).</summary>
+    public static double[] VonHannEcma(int n) => Cached(n, 3, static len => { var w = new double[len]; FillVonHannEcma(w); return w; });
 
     // ------------------------------------------------------------------
     // Helper: apply a window vector elementwise to a signal span (in-place).
@@ -160,8 +148,7 @@ public static class Windows
     {
         if (signal.Length != window.Length)
             throw new ArgumentException("Signal and window lengths must match.");
-        for (int i = 0; i < signal.Length; i++)
-            signal[i] *= window[i];
+        VectorMath.Multiply(signal, window, signal);
     }
 
     /// <summary>

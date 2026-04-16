@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 
 namespace Mosqito.Dsp;
 
@@ -107,10 +108,7 @@ public static class SosFilter
             ProcessCore(sos, padded.AsSpan(0, nPad), forward.AsSpan(0, nPad), ziArr, nSec);
 
             // Reverse
-            for (int i = 0; i < nPad / 2; i++)
-            {
-                (forward[i], forward[nPad - 1 - i]) = (forward[nPad - 1 - i], forward[i]);
-            }
+            forward.AsSpan(0, nPad).Reverse();
 
             // Backward pass
             ziArr.AsSpan(0, nSec * 2).Clear();
@@ -168,6 +166,7 @@ public static class SosFilter
 
     /// <summary>
     /// Applies an SOS filter along axis 0 of a 2-D array (rows = samples, cols = segments).
+    /// Columns are processed in parallel — each column is independent.
     /// Returns a new 2-D array of the same shape.
     /// </summary>
     public static double[,] Process2D(double[,] sos, double[,] input)
@@ -175,15 +174,19 @@ public static class SosFilter
         int nSamples = input.GetLength(0);
         int nCols    = input.GetLength(1);
         double[,] output = new double[nSamples, nCols];
-        double[] col = new double[nSamples];
-        double[] colOut = new double[nSamples];
 
-        for (int c = 0; c < nCols; c++)
-        {
-            for (int r = 0; r < nSamples; r++) col[r] = input[r, c];
-            Process(sos, col, colOut);
-            for (int r = 0; r < nSamples; r++) output[r, c] = colOut[r];
-        }
+        Parallel.For(0, nCols,
+            () => (col: new double[nSamples], colOut: new double[nSamples]),
+            (c, _, state) =>
+            {
+                var (col, colOut) = state;
+                for (int r = 0; r < nSamples; r++) col[r] = input[r, c];
+                Process(sos, col, colOut);
+                for (int r = 0; r < nSamples; r++) output[r, c] = colOut[r];
+                return state;
+            },
+            _ => { });
+
         return output;
     }
 }
