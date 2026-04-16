@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Threading.Tasks;
 using Mosqito.Dsp;
 
 namespace Mosqito.SoundLevelMeter;
@@ -64,36 +65,32 @@ public static class NoctSpectrum
 
         double[] spec = new double[plan.Bands.Length];
 
-        // Rent one scratch buffer for the bandpass-filter output of non-decimated bands.
-        // Reused across all bands — eliminates one full-signal alloc per band.
-        double[] scratch = ArrayPool<double>.Shared.Rent(sig.Length);
-        try
-        {
-            for (int i = 0; i < plan.Bands.Length; i++)
+        // Copy signal once for parallel access — spans can't cross Parallel.For closures.
+        double[] sigArr = sig.ToArray();
+        int sigLen = sigArr.Length;
+
+        Parallel.For(0, plan.Bands.Length,
+            () => ArrayPool<double>.Shared.Rent(sigLen),
+            (i, _, scratch) =>
             {
                 BandPlan band = plan.Bands[i];
                 if (band.DecimQ > 0)
                 {
-                    // Decimation: FiltFilt still allocates its output, but the SOS is cached.
-                    double[] decimated = ApplyDecimate(sig, band.DecimQ, band.DecimSos);
+                    double[] decimated = ApplyDecimate(sigArr, band.DecimQ, band.DecimSos);
                     int dLen = decimated.Length;
                     double[] decimOut = ArrayPool<double>.Shared.Rent(dLen);
-                    try
-                    {
-                        SosFilter.Process(band.BandSos, decimated.AsSpan(0, dLen), decimOut.AsSpan(0, dLen));
-                        spec[i] = Rms(decimOut.AsSpan(0, dLen));
-                    }
-                    finally { ArrayPool<double>.Shared.Return(decimOut); }
+                    SosFilter.Process(band.BandSos, decimated.AsSpan(0, dLen), decimOut.AsSpan(0, dLen));
+                    spec[i] = Rms(decimOut.AsSpan(0, dLen));
+                    ArrayPool<double>.Shared.Return(decimOut);
                 }
                 else
                 {
-                    // Non-decimated bands: zero-copy path using the shared scratch buffer.
-                    SosFilter.Process(band.BandSos, sig, scratch.AsSpan(0, sig.Length));
-                    spec[i] = Rms(scratch.AsSpan(0, sig.Length));
+                    SosFilter.Process(band.BandSos, sigArr, scratch.AsSpan(0, sigLen));
+                    spec[i] = Rms(scratch.AsSpan(0, sigLen));
                 }
-            }
-        }
-        finally { ArrayPool<double>.Shared.Return(scratch); }
+                return scratch;
+            },
+            scratch => ArrayPool<double>.Shared.Return(scratch));
 
         return (spec, plan.FPref);
     }
@@ -155,10 +152,5 @@ public static class NoctSpectrum
         return output;
     }
 
-    private static double Rms(ReadOnlySpan<double> signal)
-    {
-        double sumSq = 0.0;
-        for (int i = 0; i < signal.Length; i++) sumSq += signal[i] * signal[i];
-        return Math.Sqrt(sumSq / signal.Length);
-    }
+    private static double Rms(ReadOnlySpan<double> signal) => VectorMath.Rms(signal);
 }
