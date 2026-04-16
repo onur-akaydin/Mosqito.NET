@@ -109,49 +109,54 @@ public static class SiiAnsi
         string method, double[] speechSpectrum, double[] noiseSpectrum,
         double[]? threshold, BandData bd)
     {
-        int nBands = bd.CenterFreqs.Length;
+        int nBands = bd.CenterFreqs.Length; // ≤ 21 — all locals stackalloc'd
 
-        // Threshold of hearing T
-        double[] T;
-        if (threshold == null)
+        // Threshold of hearing T (external param; can't stackalloc)
+        ReadOnlySpan<double> T = threshold != null ? threshold : stackalloc double[nBands];
+
+        // Precompute log10(cf[k]) and 10^(0.1*noiseSpectrum[k]) to avoid O(n²) transcendental repeats
+        Span<double> log10CF    = stackalloc double[nBands];
+        Span<double> pow10Noise = stackalloc double[nBands];
+        for (int i = 0; i < nBands; i++)
         {
-            T = new double[nBands];
-        }
-        else
-        {
-            T = threshold;
+            log10CF[i]    = Math.Log10(bd.CenterFreqs[i]);
+            pow10Noise[i] = Math.Pow(10.0, 0.1 * noiseSpectrum[i]);
         }
 
         // STEP 3 — effective noise Z (upward spread of masking)
-        double[] Z = new double[nBands];
+        Span<double> Z = stackalloc double[nBands];
         if (method == "octave")
         {
-            // For octave, no spreading needed
             for (int i = 0; i < nBands; i++) Z[i] = noiseSpectrum[i];
         }
         else
         {
-            double[] V = new double[nBands];
-            double[] B = new double[nBands];
+            Span<double> V = stackalloc double[nBands];
+            Span<double> B = stackalloc double[nBands];
             for (int i = 0; i < nBands; i++)
             {
                 V[i] = speechSpectrum[i] - 24.0;
                 B[i] = Math.Max(noiseSpectrum[i], V[i]);
             }
 
-            double[] C = new double[nBands];
+            // Precompute pow10B[k] = 10^(0.1*B[k]) to factor out of inner loop
+            Span<double> pow10B = stackalloc double[nBands];
+            for (int k = 0; k < nBands; k++) pow10B[k] = Math.Pow(10.0, 0.1 * B[k]);
+
+            Span<double> C = stackalloc double[nBands];
             if (method == "third_octave")
             {
                 for (int i = 0; i < nBands; i++)
-                    C[i] = -80.0 + 0.6 * (B[i] + 10.0 * Math.Log10(bd.CenterFreqs[i]) - 6.353);
+                    C[i] = -80.0 + 0.6 * (B[i] + 10.0 * log10CF[i] - 6.353);
 
                 for (int i = 0; i < nBands; i++)
                 {
                     double s = 0.0;
+                    double log10CFi = log10CF[i];
                     for (int k = 0; k < i; k++)
-                        s += Math.Pow(10.0, 0.1 * (B[k] + 3.32 * C[k] *
-                            Math.Log10(0.89 * bd.CenterFreqs[i] / bd.CenterFreqs[k])));
-                    Z[i] = 10.0 * Math.Log10(Math.Pow(10.0, 0.1 * noiseSpectrum[i]) + s);
+                        s += pow10B[k] * Math.Pow(10.0, 0.332 * C[k] *
+                            (Math.Log10(0.89) + log10CFi - log10CF[k]));
+                    Z[i] = 10.0 * Math.Log10(pow10Noise[i] + s);
                 }
             }
             else
@@ -163,25 +168,25 @@ public static class SiiAnsi
                 for (int i = 0; i < nBands; i++)
                 {
                     double s = 0.0;
+                    double log10CFi = log10CF[i];
                     for (int k = 0; k < i - 1; k++)
-                        s += Math.Pow(10.0, 0.1 * (B[k] + 3.32 * C[k] *
-                            Math.Log10(bd.CenterFreqs[i] / bd.CenterFreqs[k])));
-                    Z[i] = 10.0 * Math.Log10(Math.Pow(10.0, 0.1 * noiseSpectrum[i]) + s);
+                        s += pow10B[k] * Math.Pow(10.0, 0.332 * C[k] * (log10CFi - log10CF[k]));
+                    Z[i] = 10.0 * Math.Log10(pow10Noise[i] + s);
                 }
             }
             Z[0] = B[0]; // 4.3.2.4
         }
 
         // STEP 4
-        double[] X = new double[nBands];
+        Span<double> X = stackalloc double[nBands];
         for (int i = 0; i < nBands; i++) X[i] = bd.RefInternalNoise[i] + T[i];
 
         // STEP 5
-        double[] D = new double[nBands];
+        Span<double> D = stackalloc double[nBands];
         for (int i = 0; i < nBands; i++) D[i] = Math.Max(Z[i], X[i]);
 
         // STEP 6
-        double[] L = new double[nBands];
+        Span<double> L = stackalloc double[nBands];
         for (int i = 0; i < nBands; i++)
         {
             double v = 1.0 - (speechSpectrum[i] - bd.StdSpeechSpectrumNormal[i] - 10.0) / 160.0;
@@ -189,22 +194,19 @@ public static class SiiAnsi
         }
 
         // STEP 7
-        double[] K = new double[nBands];
+        Span<double> K = stackalloc double[nBands];
         for (int i = 0; i < nBands; i++)
         {
             double v = (speechSpectrum[i] - D[i] + 15.0) / 30.0;
             K[i] = Math.Max(0.0, Math.Min(1.0, v));
         }
 
-        double[] A = new double[nBands];
-        for (int i = 0; i < nBands; i++) A[i] = L[i] * K[i];
-
-        // STEP 8
+        // STEP 8 — siiSpec is returned; must be heap-allocated
         double sii = 0.0;
         double[] siiSpec = new double[nBands];
         for (int i = 0; i < nBands; i++)
         {
-            siiSpec[i] = bd.Importance[i] * A[i];
+            siiSpec[i] = bd.Importance[i] * L[i] * K[i];
             sii += siiSpec[i];
         }
 
@@ -279,7 +281,7 @@ public static class SiiAnsi
         cf:  new[] { 350d, 450, 570, 700, 840, 1000, 1170, 1370, 1600, 1850, 2150, 2500, 2900, 3400, 4000, 4800, 5800 },
         lf:  new[] { 300d, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720, 2000, 2320, 2700, 3150, 3700, 4400, 5300 },
         uf:  new[] { 400d, 510, 630, 770, 920, 1080, 1270, 1480, 1720, 2000, 2320, 2700, 3150, 3700, 4400, 5300, 6400 },
-        imp: new double[17].Select(_ => 0.0588).ToArray(),
+        imp: new double[] { 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588, 0.0588 },
         rin: new[] { -7.20, -8.90, -10.30, -11.40, -12.00, -12.50, -13.20, -14.00, -15.40, -16.90, -18.80, -21.20, -23.20, -24.90, -25.90, -24.20, -19.00 },
         ssn: new[] { 34.14, 34.58, 33.17, 30.64, 27.59, 25.01, 23.52, 22.28, 20.15, 18.29, 16.37, 13.80, 12.21, 11.09, 9.33, 5.84, 3.47 });
 
