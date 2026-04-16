@@ -1,3 +1,4 @@
+using System.Buffers;
 using Mosqito.Dsp;
 
 namespace Mosqito.SqMetrics.Loudness;
@@ -220,7 +221,7 @@ public static class LoudnessZwtv
         double[] sig48;
         if (fs != 48000)
         {
-            Console.WriteLine("[Warning] Signal resampled to 48 kHz for Zwicker time-varying loudness.");
+            MosqitoLog.Warn("[Warning] Signal resampled to 48 kHz for Zwicker time-varying loudness.");
             sig48 = Resample.Apply(signal, fs, 48000);
         }
         else
@@ -267,29 +268,37 @@ public static class LoudnessZwtv
         int nTime = sig.Length / decFactor;
         double[,] levels = new double[nBands, nTime];
 
-        double[] filtered = new double[sig.Length];
-        double[] smoothed = new double[sig.Length];
-
-        for (int b = 0; b < nBands; b++)
+        int sigLen = sig.Length;
+        Parallel.For(0, nBands, b =>
         {
-            // Apply ISO SOS filter
-            SosFilter.Process(BandSos[b], sig, filtered);
-
-            // Scale by filter gain
-            double gain = FilterGain[b];
-            for (int i = 0; i < filtered.Length; i++) filtered[i] *= gain;
-
-            // Square and smooth (3× first-order LP)
-            double centerFreq = Math.Pow(10.0, (b - 16.0) / 10.0) * 1000.0;
-            SquareAndSmooth(filtered, centerFreq, fs, smoothed);
-
-            // Decimate and convert to SPL dB
-            for (int t = 0; t < nTime; t++)
+            double[] filtered = ArrayPool<double>.Shared.Rent(sigLen);
+            double[] smoothed = ArrayPool<double>.Shared.Rent(sigLen);
+            try
             {
-                double val = smoothed[t * decFactor];
-                levels[b, t] = 10.0 * Math.Log10((val + tinyVal) / iRef);
+                // Apply ISO SOS filter
+                SosFilter.Process(BandSos[b], sig, filtered.AsSpan(0, sigLen));
+
+                // Scale by filter gain
+                double gain = FilterGain[b];
+                for (int i = 0; i < sigLen; i++) filtered[i] *= gain;
+
+                // Square and smooth (3× first-order LP)
+                double centerFreq = Math.Pow(10.0, (b - 16.0) / 10.0) * 1000.0;
+                SquareAndSmooth(filtered.AsSpan(0, sigLen), centerFreq, fs, smoothed.AsSpan(0, sigLen));
+
+                // Decimate and convert to SPL dB
+                for (int t = 0; t < nTime; t++)
+                {
+                    double val = smoothed[t * decFactor];
+                    levels[b, t] = 10.0 * Math.Log10((val + tinyVal) / iRef);
+                }
             }
-        }
+            finally
+            {
+                ArrayPool<double>.Shared.Return(filtered);
+                ArrayPool<double>.Shared.Return(smoothed);
+            }
+        });
 
         // Time axis
         double[] tAxis = new double[nTime];
@@ -371,65 +380,73 @@ public static class LoudnessZwtv
 
         int nExpanded = nTime * nlIter;
 
-        // Temporary buffers (per-Bark row)
-        double[] ui = new double[nExpanded];
-        double[] uo = new double[nExpanded];
-        double[] u2 = new double[nExpanded];
-
-        for (int b = 0; b < nBark; b++)
+        Parallel.For(0, nBark, b =>
         {
-            // Build expanded signal with linear interpolation between frames
-            for (int t = 0; t < nTime; t++)
+            // Per-iteration rented buffers (returned in finally)
+            double[] ui = ArrayPool<double>.Shared.Rent(nExpanded);
+            double[] uo = ArrayPool<double>.Shared.Rent(nExpanded);
+            double[] u2 = ArrayPool<double>.Shared.Rent(nExpanded);
+            try
             {
-                double cur  = coreLoudness[b, t];
-                double next = (t < nTime - 1) ? coreLoudness[b, t + 1] : cur;
-                double delta = (next - cur) / nlIter;
-                for (int k = 0; k < nlIter; k++)
-                    ui[t * nlIter + k] = cur + k * delta;
-            }
-
-            // Initialise uo and u2
-            Array.Copy(ui, uo, nExpanded);
-            Array.Clear(u2, 0, nExpanded);
-            if (coreLoudness[b, 0] >= 1e-5)
-                u2[0] = coreLoudness[b, 0] * (1.0 - B5);
-
-            // Nonlinear IIR loop
-            for (int col = 1; col < nExpanded; col++)
-            {
-                double uiCur  = ui[col];
-                double uoLast = uo[col - 1];
-                double u2Last = u2[col - 1];
-
-                double uo2a = uoLast * B2 - u2Last * B3;
-                if (uoLast > u2Last && uo2a >= uiCur)
+                // Build expanded signal with linear interpolation between frames
+                for (int t = 0; t < nTime; t++)
                 {
-                    uo[col] = uo2a;
-                }
-                else
-                {
-                    double uo2b = uoLast * B4;
-                    if (uoLast <= u2Last && uo2b >= uiCur)
-                        uo[col] = uo2b;
-                    // else uo[col] = uiCur (already set by Array.Copy)
+                    double cur  = coreLoudness[b, t];
+                    double next = (t < nTime - 1) ? coreLoudness[b, t + 1] : cur;
+                    double delta = (next - cur) / nlIter;
+                    for (int k = 0; k < nlIter; k++)
+                        ui[t * nlIter + k] = cur + k * delta;
                 }
 
-                u2[col] = uo[col]; // default: u2 = uo
+                // Initialise uo and u2
+                Array.Copy(ui, uo, nExpanded);
+                Array.Clear(u2, 0, nExpanded);
+                if (coreLoudness[b, 0] >= 1e-5)
+                    u2[0] = coreLoudness[b, 0] * (1.0 - B5);
 
-                double u22 = uoLast * B0 - u2Last * B1;
-                if (uiCur < uoLast && uoLast > u2Last && u22 <= uo[col])
-                    u2[col] = u22;
+                // Nonlinear IIR loop
+                for (int col = 1; col < nExpanded; col++)
+                {
+                    double uiCur  = ui[col];
+                    double uoLast = uo[col - 1];
+                    double u2Last = u2[col - 1];
 
-                double u2_2 = (u2Last - uiCur) * B5 + uiCur;
-                bool notSpecialCase = !(Math.Abs(uiCur - uoLast) < 1e-5 && uo[col] <= u2Last);
-                if (uiCur >= uoLast && notSpecialCase)
-                    u2[col] = u2_2;
+                    double uo2a = uoLast * B2 - u2Last * B3;
+                    if (uoLast > u2Last && uo2a >= uiCur)
+                    {
+                        uo[col] = uo2a;
+                    }
+                    else
+                    {
+                        double uo2b = uoLast * B4;
+                        if (uoLast <= u2Last && uo2b >= uiCur)
+                            uo[col] = uo2b;
+                        // else uo[col] = uiCur (already set by Array.Copy)
+                    }
+
+                    u2[col] = uo[col]; // default: u2 = uo
+
+                    double u22 = uoLast * B0 - u2Last * B1;
+                    if (uiCur < uoLast && uoLast > u2Last && u22 <= uo[col])
+                        u2[col] = u22;
+
+                    double u2_2 = (u2Last - uiCur) * B5 + uiCur;
+                    bool notSpecialCase = !(Math.Abs(uiCur - uoLast) < 1e-5 && uo[col] <= u2Last);
+                    if (uiCur >= uoLast && notSpecialCase)
+                        u2[col] = u2_2;
+                }
+
+                // Extract first inner sample of each frame
+                for (int t = 0; t < nTime; t++)
+                    result[b, t] = uo[t * nlIter];
             }
-
-            // Extract first inner sample of each frame
-            for (int t = 0; t < nTime; t++)
-                result[b, t] = uo[t * nlIter];
-        }
+            finally
+            {
+                ArrayPool<double>.Shared.Return(ui);
+                ArrayPool<double>.Shared.Return(uo);
+                ArrayPool<double>.Shared.Return(u2);
+            }
+        });
 
         return result;
     }

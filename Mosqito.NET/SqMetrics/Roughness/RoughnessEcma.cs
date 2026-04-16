@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using Mosqito.Dsp;
 using Mosqito.SqMetrics.Loudness;
@@ -44,7 +45,7 @@ public static class RoughnessEcma
         double[] sig;
         if (fs != Fs)
         {
-            Console.WriteLine("[Warning] Signal resampled to 48 kHz for ECMA-418-2 roughness.");
+            MosqitoLog.Warn("[Warning] Signal resampled to 48 kHz for ECMA-418-2 roughness.");
             sig = Resample.Apply(signal, fs, Fs);
         }
         else
@@ -69,12 +70,15 @@ public static class RoughnessEcma
         double[][][] bandBlocks = new double[CBF][][];
         double[][] timeArrays   = new double[CBF][];
 
+        int earLen = earFiltered.Length;
         for (int z = 0; z < CBF; z++)
         {
             var (bGamma, aGamma) = LoudnessEcma.GammatoneFilters[z];
-            double[] bp = LoudnessEcma.ApplyGammatoneFilter(earFiltered, bGamma, aGamma);
+            double[] bp = ArrayPool<double>.Shared.Rent(earLen);
+            LoudnessEcma.ApplyGammatoneFilter(earFiltered, bGamma, aGamma, bp);
 
-            var (blocks, times) = LoudnessEcma.Segment(bp, Sb, Sh, nNew, iStart);
+            var (blocks, times) = LoudnessEcma.Segment(bp, earLen, Sb, Sh, nNew, iStart);
+            ArrayPool<double>.Shared.Return(bp);
             bandBlocks[z] = blocks;
             timeArrays[z] = times;
 
@@ -103,64 +107,56 @@ public static class RoughnessEcma
         }
 
         // STEP 4 — Hilbert envelope of each band signal, then downsample to 1500 Hz
-        // Downsample 32× in two steps: ÷8 then ÷4 (matching Python: decimate q=8 then q=4)
-        // Then segment into sbb=512 blocks at 1500 Hz
-        // envDown[z][l][] = downsampled envelope block l for band z
-        // We need envelopes_downsampled of shape (nBlocks, CBF, sbb)
-        // Process each band in full signal form
-        double[][][] envsDown = new double[L][][]; // [l][z][sbb]
-        for (int l = 0; l < L; l++)
-        {
-            envsDown[l] = new double[CBF][];
-            for (int z = 0; z < CBF; z++) envsDown[l][z] = new double[Sbb];
-        }
+        // Flat [L, CBF, Sbb] replaces the jagged double[][][] to cut header allocations.
+        double[] envsDown = new double[L * CBF * Sbb];
 
         for (int z = 0; z < CBF; z++)
         {
-            // Concatenate all blocks for this band into one signal then compute envelope
-            // (matches Python which operates on (CBF, nTime, sb) array axis=2)
-            // Actually Python operates per-block: envelopes[z][l][0:sb] via Hilbert
             for (int l = 0; l < L; l++)
             {
                 double[] block = bandBlocks[z][l];
                 double[] env   = Hilbert.Envelope(block);
 
-                // Downsample env by 32: first by 8, then by 4
                 double[] d8  = DecimateSimple(env, 8);
                 double[] d32 = DecimateSimple(d8, 4);
 
-                // d32 should have length Sb/32 = 16384/32 = 512 = Sbb
                 int copyLen = Math.Min(d32.Length, Sbb);
-                Array.Copy(d32, envsDown[l][z], copyLen);
+                int baseIdx = (l * CBF + z) * Sbb;
+                for (int k = 0; k < copyLen; k++) envsDown[baseIdx + k] = d32[k];
             }
         }
 
         // STEP 5 — Von Hann window and scaled power spectrum
         double[] vhann    = VonHannWindow(Sbb);
-        double[,,] phiE0  = new double[L, CBF, 1]; // sum of windowed^2
-        double[,,] phiERaw = new double[L, CBF, Sbb / 2]; // raw FFT power
+        double[,,] phiE0  = new double[L, CBF, 1];
+        double[,,] phiERaw = new double[L, CBF, Sbb / 2];
+
+        // Single scratch buffers reused across the entire L×CBF loop (saves ~2650 allocs).
+        // specBuf must be exactly Sbb because Fourier.Forward operates on the full array.
+        double[]  ewBuf   = new double[Sbb];
+        Complex[] specBuf = new Complex[Sbb];
 
         for (int l = 0; l < L; l++)
         for (int z = 0; z < CBF; z++)
         {
-            double[] ew = new double[Sbb];
+            int baseIdx = (l * CBF + z) * Sbb;
             double sumSq = 0.0;
             for (int k = 0; k < Sbb; k++)
             {
-                ew[k] = envsDown[l][z][k] * vhann[k];
-                sumSq += ew[k] * ew[k];
+                double v = envsDown[baseIdx + k] * vhann[k];
+                ewBuf[k] = v;
+                sumSq += v * v;
             }
             phiE0[l, z, 0] = sumSq;
 
-            // FFT of windowed envelope — take first sbb/2 bins
-            Complex[] spec = new Complex[Sbb];
-            for (int k = 0; k < Sbb; k++) spec[k] = new Complex(ew[k], 0.0);
+            for (int k = 0; k < Sbb; k++) specBuf[k] = new Complex(ewBuf[k], 0.0);
             MathNet.Numerics.IntegralTransforms.Fourier.Forward(
-                spec, MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
+                specBuf,
+                MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
 
             for (int k = 0; k < Sbb / 2; k++)
             {
-                double mag = spec[k].Magnitude / 2.0 * Math.Sqrt(2.0);
+                double mag = specBuf[k].Magnitude / 2.0 * Math.Sqrt(2.0);
                 phiERaw[l, z, k] = mag * mag;
             }
         }
@@ -188,13 +184,14 @@ public static class RoughnessEcma
 
         // STEP 8 — Spectral weighting per time/band block
         double[,] amplitude = new double[L, CBF];
+        // Reuse a single slice buffer across the L×CBF loop (256 doubles = 2 KB).
+        double[] sliceBuf = new double[Sbb / 2];
         for (int l = 0; l < L; l++)
         for (int z = 0; z < CBF; z++)
         {
-            double[] slice = new double[Sbb / 2];
-            for (int k = 0; k < Sbb / 2; k++) slice[k] = PhiE[l, z, k];
+            for (int k = 0; k < Sbb / 2; k++) sliceBuf[k] = PhiE[l, z, k];
 
-            var (fp, Ai) = PeakPicking(slice);
+            var (fp, Ai) = PeakPicking(sliceBuf);
             int nPeak = fp.Length;
 
             if (nPeak == 0)

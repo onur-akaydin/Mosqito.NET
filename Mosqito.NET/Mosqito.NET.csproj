@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Optimize>true</Optimize>
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
     <AssemblyName>Mosqito.NET</AssemblyName>
     <RootNamespace>Mosqito</RootNamespace>
     <Version>1.2.1</Version>

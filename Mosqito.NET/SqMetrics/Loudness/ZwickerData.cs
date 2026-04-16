@@ -99,6 +99,16 @@ internal static class ZwickerData
         {  0.06,0.05, 0.03, 0.02,0.02,0.02,0.02,0.02},
     };
 
+    // Precomputed: 0.0635 * 10^(0.025 * Ltq[i]) — used by MainLoudness inner loop
+    internal static readonly double[] Ltq10Pow = BuildLtq10Pow();
+    private static double[] BuildLtq10Pow()
+    {
+        double[] r = new double[Ltq.Length];
+        for (int i = 0; i < Ltq.Length; i++)
+            r[i] = 0.0635 * Math.Pow(10.0, 0.025 * Ltq[i]);
+        return r;
+    }
+
     // Precomputed USL extended to 21 columns (columns 8-20 = column 7)
     internal static readonly double[,] UslReshaped = BuildUslReshaped();
 

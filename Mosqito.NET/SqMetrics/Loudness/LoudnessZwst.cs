@@ -1,3 +1,4 @@
+using System.Buffers;
 using Mosqito.Conversion;
 using Mosqito.Dsp;
 using Mosqito.SoundLevelMeter;
@@ -48,16 +49,18 @@ public static class LoudnessZwst
         string fieldType = "free")
     {
         // Resample to 48 kHz if needed
-        double[] sig = signal.ToArray();
+        ReadOnlySpan<double> sigSpan = signal;
+        double[]? resampled = null;
         if (fs < 48000)
         {
-            Console.WriteLine("[Warning] Signal resampled to 48 kHz for Zwicker loudness.");
-            sig = Resample.Apply(signal, fs, 48000);
-            fs = 48000;
+            MosqitoLog.Warn("[Warning] Signal resampled to 48 kHz for Zwicker loudness.");
+            resampled = Resample.Apply(signal, fs, 48000);
+            sigSpan   = resampled;
+            fs        = 48000;
         }
 
         // Compute 1/3-octave spectrum from 24 Hz to 12600 Hz (28 bands)
-        var (specThird, _) = NoctSpectrum.Compute(sig, fs, fmin: 24, fmax: 12600);
+        var (specThird, _) = NoctSpectrum.Compute(sigSpan, fs, fmin: 24, fmax: 12600);
 
         // Convert to dB re 2e-5 Pa
         double[] specDb = AmpDb.Amp2Db(specThird, reference: 2e-5);
@@ -123,15 +126,21 @@ public static class LoudnessZwst
         double[] N = new double[nSeg];
         double[,] NSpec = new double[240, nSeg];
 
-        double[] segBuf = new double[nSamples];
-
-        for (int seg = 0; seg < nSeg; seg++)
+        Parallel.For(0, nSeg, seg =>
         {
-            for (int s = 0; s < nSamples; s++) segBuf[s] = blockArray[s, seg];
-            var result = Compute(segBuf, fs, fieldType);
-            N[seg] = result.N;
-            for (int b = 0; b < 240; b++) NSpec[b, seg] = result.NSpecific[b];
-        }
+            double[] segBuf = ArrayPool<double>.Shared.Rent(nSamples);
+            try
+            {
+                for (int s = 0; s < nSamples; s++) segBuf[s] = blockArray[s, seg];
+                var result = Compute(segBuf.AsSpan(0, nSamples), fs, fieldType);
+                N[seg] = result.N;
+                for (int b = 0; b < 240; b++) NSpec[b, seg] = result.NSpecific[b];
+            }
+            finally
+            {
+                ArrayPool<double>.Shared.Return(segBuf);
+            }
+        });
 
         return (N, NSpec, BarkAxisCache, timeAxis);
     }

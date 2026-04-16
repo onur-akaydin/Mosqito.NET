@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using Mosqito.Dsp;
 
@@ -161,29 +162,30 @@ public static class LoudnessEcma
     // Complex IIR filter (matches scipy.signal.lfilter with complex b, a)
     // Applied to real input; output is 2 × real(y).
     // ------------------------------------------------------------------
-    internal static double[] ApplyGammatoneFilter(double[] signal, Complex[] b, Complex[] a)
+    internal static void ApplyGammatoneFilter(double[] signal, Complex[] b, Complex[] a, double[] output)
     {
         int n = signal.Length;
         int nb = b.Length; // k = 5
         int na = a.Length; // k+1 = 6
 
-        // a[0] should be 1 (or very close to it) — no normalization needed.
-        Complex[] y = new Complex[n];
-        double[] result = new double[n];
-
-        for (int i = 0; i < n; i++)
+        Complex[] y = ArrayPool<Complex>.Shared.Rent(n);
+        try
         {
-            Complex acc = Complex.Zero;
-            for (int k = 0; k < nb && i - k >= 0; k++)
-                acc += b[k] * signal[i - k];
-            for (int m = 1; m < na && i - m >= 0; m++)
-                acc -= a[m] * y[i - m];
-            // a[0] = 1 (by construction from exp(j*0) * 1 = 1)
-            y[i] = acc;
-            result[i] = 2.0 * acc.Real;
+            for (int i = 0; i < n; i++)
+            {
+                Complex acc = Complex.Zero;
+                for (int k = 0; k < nb && i - k >= 0; k++)
+                    acc += b[k] * signal[i - k];
+                for (int m = 1; m < na && i - m >= 0; m++)
+                    acc -= a[m] * y[i - m];
+                y[i] = acc;
+                output[i] = 2.0 * acc.Real;
+            }
         }
-
-        return result;
+        finally
+        {
+            ArrayPool<Complex>.Shared.Return(y);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -192,24 +194,24 @@ public static class LoudnessEcma
     internal static (double[] padded, int nNew) Preprocessing(double[] signal, int sb, int sh)
     {
         int nSamples = signal.Length;
-        double[] sig = (double[])signal.Clone();
-
-        // Fade-in window: first 240 samples (5 ms at 48 kHz)
-        const int nFadeIn = 240;
-        for (int i = 0; i < nFadeIn && i < sig.Length; i++)
-        {
-            double w = 0.5 - 0.5 * Math.Cos(Math.PI * i / nFadeIn);
-            sig[i] *= w;
-        }
 
         // Zero padding
         int nZeroStart = sb;
         int nNew = (int)(sh * (Math.Ceiling((double)(nSamples + sh + sb) / sh) - 1));
         int nZeroEnd = nNew - nSamples;
 
+        // Write directly into padded, applying the fade-in window during copy.
+        // Avoids a full Clone() + Array.Copy().
         double[] padded = new double[nZeroStart + nSamples + nZeroEnd];
-        Array.Copy(sig, 0, padded, nZeroStart, nSamples);
-        // zeros already initialized
+        const int nFadeIn = 240;
+        for (int i = 0; i < nSamples; i++)
+        {
+            double v = signal[i];
+            if (i < nFadeIn)
+                v *= 0.5 - 0.5 * Math.Cos(Math.PI * i / nFadeIn);
+            padded[nZeroStart + i] = v;
+        }
+        // trailing zeros already zero-initialized
 
         return (padded, nNew);
     }
@@ -219,39 +221,34 @@ public static class LoudnessEcma
     // Returns blocks[nBlocks][sb] and times[nBlocks]
     // ------------------------------------------------------------------
     internal static (double[][] blocks, double[] times) Segment(
-        double[] signal, int sb, int sh, int nNew, int iStart)
+        double[] signal, int signalLength, int sb, int sh, int nNew, int iStart)
     {
-        int nAll = signal.Length;
+        int nAll = signalLength;
         int lLast = (int)(Math.Ceiling((double)(nNew + sh) / sh) - 1);
 
-        var blockList  = new List<double[]>(lLast);
-        var timeList   = new List<double>(lLast);
-
+        double[][] blocks = new double[lLast][];
+        double[]   times  = new double[lLast];
         double tScale = 1.0 / Fs;
+        double sbMinus1 = sb - 1.0;
 
         for (int l = 0; l < lLast; l++)
         {
-            int startIdx = l * sh + iStart;
-            // Use linspace(startIdx, startIdx + sb, sb) cast to int — same as Python
-            double linStart = startIdx;
-            double linStop  = startIdx + sb;
-            int[] idx = new int[sb];
-            for (int k = 0; k < sb; k++)
-                idx[k] = (int)(linStart + k * (linStop - linStart) / (sb - 1));
+            double linStart = l * sh + iStart;
+            double linStop  = linStart + sb;
 
             double[] block = new double[sb];
             double tSum = 0.0;
             for (int k = 0; k < sb; k++)
             {
-                int si = idx[k];
+                int si = (int)(linStart + k * (linStop - linStart) / sbMinus1);
                 block[k] = (si >= 0 && si < nAll) ? signal[si] : 0.0;
                 tSum += si * tScale;
             }
-            blockList.Add(block);
-            timeList.Add(tSum / sb);
+            blocks[l] = block;
+            times[l]  = tSum / sb;
         }
 
-        return (blockList.ToArray(), timeList.ToArray());
+        return (blocks, times);
     }
 
     // ------------------------------------------------------------------
@@ -326,7 +323,7 @@ public static class LoudnessEcma
         double[] sig;
         if (fs != 48000)
         {
-            Console.WriteLine("[Warning] Signal resampled to 48 kHz for ECMA-418-2 loudness.");
+            MosqitoLog.Warn("[Warning] Signal resampled to 48 kHz for ECMA-418-2 loudness.");
             sig = Resample.Apply(signal, fs, 48000);
         }
         else
@@ -347,34 +344,43 @@ public static class LoudnessEcma
         double[][] NSpec    = new double[NBands][];
         double[][] timeArrays = new double[NBands][];
 
-        for (int z = 0; z < NBands; z++)
+        int earLen = earFiltered.Length;
+        Parallel.For(0, NBands, z =>
         {
-            // 5.1.4 Gammatone filter (complex IIR)
+            // 5.1.4 Gammatone filter (complex IIR) — bandPass rented to avoid per-band heap alloc
             var (bGamma, aGamma) = GammatoneFilters[z];
-            double[] bandPass = ApplyGammatoneFilter(earFiltered, bGamma, aGamma);
+            double[] bandPass = ArrayPool<double>.Shared.Rent(earLen);
+            try
+            {
+                ApplyGammatoneFilter(earFiltered, bGamma, aGamma, bandPass);
 
-            // 5.1.5 Segmentation
-            var (blocks, times) = Segment(bandPass, sb, sh, nNew, iStart);
+                // 5.1.5 Segmentation — pass earLen so the over-sized rented buffer is bounded correctly
+                var (blocks, times) = Segment(bandPass, earLen, sb, sh, nNew, iStart);
 
-            // 5.1.6 Rectification + RMS (eq. 22)
-            double[] rms = RectifiedRms(blocks, sb);
+                // 5.1.6 Rectification + RMS (eq. 22)
+                double[] rms = RectifiedRms(blocks, sb);
 
-            // 5.1.7–5.1.8 Nonlinearity (eq. 23)
-            double[] aPrime = Nonlinearity(rms);
+                // 5.1.7–5.1.8 Nonlinearity (eq. 23)
+                double[] aPrime = Nonlinearity(rms);
 
-            // 5.1.9 Apply threshold
-            double ltq = LtqZ[z];
-            for (int l = 0; l < aPrime.Length; l++)
-                if (aPrime[l] < ltq) aPrime[l] = ltq;
+                // 5.1.9 Apply threshold
+                double ltq = LtqZ[z];
+                for (int l = 0; l < aPrime.Length; l++)
+                    if (aPrime[l] < ltq) aPrime[l] = ltq;
 
-            // N'(z, t) = aPrime - ltq
-            double[] nPrime = new double[aPrime.Length];
-            for (int l = 0; l < aPrime.Length; l++)
-                nPrime[l] = aPrime[l] - ltq;
+                // N'(z, t) = aPrime - ltq
+                double[] nPrime = new double[aPrime.Length];
+                for (int l = 0; l < aPrime.Length; l++)
+                    nPrime[l] = aPrime[l] - ltq;
 
-            NSpec[z]      = nPrime;
-            timeArrays[z] = times;
-        }
+                NSpec[z]      = nPrime;
+                timeArrays[z] = times;
+            }
+            finally
+            {
+                ArrayPool<double>.Shared.Return(bandPass);
+            }
+        });
 
         // Eq. 116: N_time = sum_z N'_z * delta_z
         // All bands should have the same length (same sb/sh)

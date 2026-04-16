@@ -1,3 +1,6 @@
+using System.Numerics;
+using System.Runtime.CompilerServices;
+
 namespace Mosqito.SqMetrics.Loudness;
 
 /// <summary>
@@ -29,9 +32,8 @@ internal static class CalcSlopes
 
         // zupEa[i] = (int)(zup[i] * 10)  (int32 truncation, not round)
         // zupEa[21] = 0  (Python's appended 0, used as zupEa[-1] for i=0)
-        int[] zupEa = new int[22];
+        Span<int> zupEa = stackalloc int[22]; // zero-initialised by runtime; zupEa[21]=0
         for (int i = 0; i < 21; i++) zupEa[i] = (int)(zup[i] * 10.0);
-        zupEa[21] = 0;
 
         double[] nSpec = new double[SpecLength];
         double   N     = 0.0;
@@ -163,9 +165,16 @@ internal static class CalcSlopes
             ? Math.Floor(N * 1000.0 + 0.5) / 1000.0
             : Math.Floor(N * 100.0  + 0.5) / 100.0;
 
-        // Clamp specific loudness
-        for (int i = 0; i < SpecLength; i++)
-            if (nSpec[i] < 0.0) nSpec[i] = 0.0;
+        // Clamp specific loudness — SIMD path (AVX2: 4 doubles/iter → 60 iters for 240 pts)
+        {
+            var zero = new Vector<double>(0.0);
+            int vw = Vector<double>.Count;
+            int i  = 0;
+            for (; i <= SpecLength - vw; i += vw)
+                Vector.Max(new Vector<double>(nSpec, i), zero).CopyTo(nSpec, i);
+            for (; i < SpecLength; i++)
+                if (nSpec[i] < 0.0) nSpec[i] = 0.0;
+        }
 
         return (N, nSpec);
     }
@@ -202,22 +211,26 @@ internal static class CalcSlopes
     // ------------------------------------------------------------------
 
     /// <summary>Returns count of RNS values strictly greater than <paramref name="nm"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int GetRnsIndex(double nm, double[] rns)
     {
-        double nmR  = Math.Round(nm, DecComp);
-        int    cnt  = 0;
+        // rns[] values are compile-time constants with ≤8 decimal places, so
+        // Math.Round(rns[i], 8) == rns[i] exactly — no need to round the table side.
+        double nmR = Math.Round(nm, DecComp);
+        int cnt = 0;
         for (int i = 0; i < rns.Length; i++)
-            if (nmR < Math.Round(rns[i], DecComp)) cnt++;
+            if (nmR < rns[i]) cnt++;
         return Math.Min(cnt, 17);
     }
 
     /// <summary>Returns count of RNS values >= <paramref name="nm"/> (equal_too=True variant).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int GetRnsIndexEq(double nm, double[] rns)
     {
-        double nmR  = Math.Round(nm, DecComp);
-        int    cnt  = 0;
+        double nmR = Math.Round(nm, DecComp);
+        int cnt = 0;
         for (int i = 0; i < rns.Length; i++)
-            if (nmR <= Math.Round(rns[i], DecComp)) cnt++;
+            if (nmR <= rns[i]) cnt++;
         return Math.Min(cnt, 17);
     }
 }

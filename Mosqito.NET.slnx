@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="Mosqito.NET/Mosqito.NET.csproj" />
   <Project Path="Mosqito.NET.Tests/Mosqito.NET.Tests.csproj" />
+  <Project Path="Mosqito.NET.Benchmarks/Mosqito.NET.Benchmarks.csproj" />
 </Solution>

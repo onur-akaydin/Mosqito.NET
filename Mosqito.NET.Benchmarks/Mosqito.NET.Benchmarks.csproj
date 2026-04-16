@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Optimize>true</Optimize>
+    <AssemblyName>Mosqito.NET.Benchmarks</AssemblyName>
+    <RootNamespace>Mosqito.Benchmarks</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mosqito.NET\Mosqito.NET.csproj" />
+  </ItemGroup>
+
+  <!-- WAV files used by *_WavFile benchmarks -->
+  <ItemGroup>
+    <None Include="..\Resources\MoSQITo-master\tests\input\Test signal 5 (pinknoise 60 dB).wav"
+          Link="tests\input\Test signal 5 (pinknoise 60 dB).wav"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\MoSQITo-master\tests\input\white_noise_442_1768_Hz_stationary.wav"
+          Link="tests\input\white_noise_442_1768_Hz_stationary.wav"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\MoSQITo-master\tests\input\white_noise_200_2000_Hz_stationary.wav"
+          Link="tests\input\white_noise_200_2000_Hz_stationary.wav"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\MoSQITo-master\tests\input\broadband_570.wav"
+          Link="tests\input\broadband_570.wav"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\MoSQITo-master\tests\input\Test signal 10 (tone pulse 1 kHz 10 ms 70 dB).wav"
+          Link="tests\input\Test signal 10 (tone pulse 1 kHz 10 ms 70 dB).wav"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

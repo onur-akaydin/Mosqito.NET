@@ -31,11 +31,12 @@ public static class NoctSynthesis
         if (spectrum.Length != freqs.Length)
             throw new ArgumentException("spectrum and freqs must have the same length.");
 
-        double fsMax = freqs[freqs.Length - 1];
-        double fs = fsMax * 2.0;
+        // FftFreq gives bins 0…(N/2-1)*df; the Nyquist is N/2*df = last + df.
+        double df = freqs.Length > 1 ? freqs[1] - freqs[0] : freqs[0];
+        double fs = (freqs[freqs.Length - 1] + df) * 2.0;
 
-        if (Math.Abs(Math.Round(fs) - 48000) > 1.0)
-            throw new ArgumentException("Sampling frequency must be 48 kHz. Got: " + fs);
+        if (Math.Abs(Math.Round(fs) - 48000) > 50.0)
+            throw new ArgumentException("Sampling frequency must be close to 48 kHz. Got: " + fs);
 
         var (fcVec, fPref) = CenterFreq.Compute(fmin, fmax, n, G, fr);
         var (alphaVec, _, fHighVec) = FilterBandwidth.Compute(fcVec, n);

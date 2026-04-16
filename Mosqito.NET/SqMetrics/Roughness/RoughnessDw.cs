@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using Mosqito.Conversion;
 using Mosqito.Dsp;
@@ -140,36 +141,47 @@ public static class RoughnessDw
         double[] gzi, double[,] hWeight)
     {
         int m = spec.Length;  // one-sided length
+        int n = 2 * m;        // two-sided
+
+        // Rent all large temporary buffers from the pool.
+        // Fourier.Forward/Inverse requires exact-length arrays, so we track sizes carefully.
+        Complex[] spec2      = ArrayPool<Complex>.Shared.Rent(n);
+        Complex[] specW      = ArrayPool<Complex>.Shared.Rent(n);
+        double[]  module     = ArrayPool<double>.Shared.Rent(m);
+        double[]  specDb     = ArrayPool<double>.Shared.Rent(m);
+        Complex[] exc        = ArrayPool<Complex>.Shared.Rent(n);
+        // ifftBuf and envBuf must be exactly n for in-place FFT — allocate normally.
+        Complex[] ifftBuf    = new Complex[n];
+        Complex[] envBuf     = new Complex[n];
+
+        try
+        {
         // Build two-sided complex spectrum: [spec, reversed(spec)]
         // Matches Python: concatenate((spec, spec[len(spec)::-1]))
-        Complex[] spec2 = new Complex[2 * m];
         for (int i = 0; i < m; i++) spec2[i] = spec[i];
         for (int i = 0; i < m; i++) spec2[m + i] = spec[m - 1 - i];
-        int n = spec2.Length; // = 2*m
 
         // Bark axis for the one-sided part
         double[] barkAxis = FreqBark.Freq2Bark(freqAxis);
 
         // Zwicker outer/inner ear transfer (a0 factor)
-        // Python: a0[nZ-1] = db2amp(...); spec = a0 * spec  (a0[m:] stays 0)
-        double[] a0dB = EarFilterCoeff(barkAxis);
-        double[] a0Real = new double[m];
-        for (int i = 0; i < m; i++) a0Real[i] = AmpDb.Db2Amp(a0dB[i], reference: 1.0);
+        double[] a0dB  = EarFilterCoeff(barkAxis);
+        double[] a0Real = ArrayPool<double>.Shared.Rent(m);
+        try
+        {
+            for (int i = 0; i < m; i++) a0Real[i] = AmpDb.Db2Amp(a0dB[i], reference: 1.0);
 
-        // Apply a0 to first half; second half stays Complex.Zero (a0 is 0 there)
-        Complex[] specW = new Complex[n];
-        for (int i = 0; i < m; i++) specW[i] = a0Real[i] * spec2[i];
+            // Apply a0 to first half; second half stays Complex.Zero
+            for (int i = 0; i < m; i++) specW[i] = a0Real[i] * spec2[i];
+            for (int i = m; i < n; i++) specW[i] = Complex.Zero;
+        }
+        finally { ArrayPool<double>.Shared.Return(a0Real); }
 
-        // Amplitude module for one-sided (magnitude of a0-weighted complex spectrum)
-        double[] module = new double[m];
         for (int i = 0; i < m; i++) module[i] = specW[i].Magnitude;
 
-        // dB levels for audibility check
-        double[] specDb = new double[m];
         for (int i = 0; i < m; i++)
             specDb[i] = module[i] > 0 ? AmpDb.Amp2Db(module[i], reference: 2e-5) : -999.0;
 
-        // Hearing threshold (roughness reference)
         double[] threshold = LTQ.Compute(barkAxis, "roughness");
 
         // Find audible components
@@ -190,15 +202,15 @@ public static class RoughnessDw
 
         // Channel centres in normalised bin space
         int nChannel = 47;
-        double[] zi = BarkAxisCache; // [0.5..23.5]
+        double[] zi    = BarkAxisCache; // [0.5..23.5]
         double[] zbFreq = FreqBark.Bark2Freq(zi);
-        double[] zb = new double[nChannel];
+        double[] zb    = new double[nChannel];
         for (int i = 0; i < nChannel; i++) zb[i] = zbFreq[i] * n / fs;
 
-        // Minimum excitation level per channel (interpolated from threshold)
+        // Minimum excitation level per channel
         double[] minExcitDb = new double[nChannel];
         double[] nZ = new double[m];
-        for (int i = 0; i < m; i++) nZ[i] = i + 1; // 1..m (index 1-based as in Python)
+        for (int i = 0; i < m; i++) nZ[i] = i + 1;
         for (int i = 0; i < nChannel; i++)
             minExcitDb[i] = Interp.Linear(zb[i], nZ, threshold);
 
@@ -234,14 +246,13 @@ public static class RoughnessDw
         }
 
         // Per-channel processing
-        double[,] hBP     = new double[nChannel, n];
+        double[,] hBP      = new double[nChannel, n];
         double[]  modDepth = new double[nChannel];
 
-        Complex[] exc = new Complex[n];
         for (int ch = 0; ch < nChannel; ch++)
         {
             // Build excitation spectrum for this channel
-            Array.Clear(exc, 0, n);
+            for (int i = 0; i < n; i++) exc[i] = Complex.Zero;
             for (int j = 0; j < nAud; j++)
             {
                 int ind = audibleIdx[j];
@@ -253,54 +264,43 @@ public static class RoughnessDw
                 else
                     ampl = module[ind] > 0 ? slopes[j, ch - 1] / module[ind] : 0.0;
 
-                exc[ind] = ampl * specW[ind];  // complex: preserves phase of original FFT
+                exc[ind] = ampl * specW[ind];
             }
 
-            // IFFT → temporal specific excitation
-            Complex[] ifftResult = new Complex[n];
-            Array.Copy(exc, ifftResult, n);
+            // IFFT → temporal specific excitation (reuse ifftBuf, exact length n)
+            exc.AsSpan(0, n).CopyTo(ifftBuf);
             MathNet.Numerics.IntegralTransforms.Fourier.Inverse(
-                ifftResult,
+                ifftBuf,
                 MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
 
             double h0 = 0.0;
             for (int i = 0; i < n; i++)
             {
-                double v = n * ifftResult[i].Real;
+                double v = n * ifftBuf[i].Real;
                 hBP[ch, i] = v;
                 h0 += Math.Abs(v);
             }
-            h0 /= n; // mean of |temporal_excitation|
+            h0 /= n;
 
             // Envelope spectrum: FFT of (|temporal_excitation| - h0)
-            double[] envTime = new double[n];
-            for (int i = 0; i < n; i++) envTime[i] = Math.Abs(hBP[ch, i]) - h0;
-
-            Complex[] envSpec = new Complex[n];
-            for (int i = 0; i < n; i++) envSpec[i] = new Complex(envTime[i], 0.0);
+            for (int i = 0; i < n; i++) envBuf[i] = new Complex(Math.Abs(hBP[ch, i]) - h0, 0.0);
             MathNet.Numerics.IntegralTransforms.Fourier.Forward(
-                envSpec,
+                envBuf,
                 MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
 
-            // Weighting by H filter
-            for (int i = 0; i < n; i++)
-                envSpec[i] *= hWeight[ch, i];
+            for (int i = 0; i < n; i++) envBuf[i] *= hWeight[ch, i];
 
-            // Back to time: hBP = 2 * real(ifft(filtered))
             MathNet.Numerics.IntegralTransforms.Fourier.Inverse(
-                envSpec,
+                envBuf,
                 MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
-            for (int i = 0; i < n; i++) hBP[ch, i] = 2.0 * envSpec[i].Real;
+            for (int i = 0; i < n; i++) hBP[ch, i] = 2.0 * envBuf[i].Real;
 
-            // Modulation depth: RMS(hBP) / h0
             double rms2 = 0.0;
-            for (int i = 0; i < n; i++) rms2 += hBP[ch, i] * hBP[ch, i];
+            for (int i = 0; i < n; i++) { double v = hBP[ch, i]; rms2 += v * v; }
             double hBpRms = Math.Sqrt(rms2 / n);
 
             if (h0 > 0.0)
-            {
                 modDepth[ch] = Math.Min(hBpRms / h0, 1.0);
-            }
         }
 
         // Cross-correlation between channels i and i+2
@@ -317,14 +317,14 @@ public static class RoughnessDw
                 ki[i] = Corrcoef(hBP, i, i + 2, n);
         }
 
-        // Specific roughness
+        // Specific roughness — use x*x instead of Math.Pow(x, 2)
         double[] rSpec = new double[47];
-        rSpec[0] = gzi[0] * Math.Pow(modDepth[0] * ki[0], 2);
-        rSpec[1] = gzi[1] * Math.Pow(modDepth[1] * ki[1], 2);
+        { double v = modDepth[0] * ki[0]; rSpec[0] = gzi[0] * v * v; }
+        { double v = modDepth[1] * ki[1]; rSpec[1] = gzi[1] * v * v; }
         for (int i = 2; i < 45; i++)
-            rSpec[i] = gzi[i] * Math.Pow(modDepth[i] * ki[i] * ki[i - 2], 2);
-        rSpec[45] = gzi[45] * Math.Pow(modDepth[45] * ki[43], 2);
-        rSpec[46] = gzi[46] * Math.Pow(modDepth[46] * ki[44], 2);
+        { double v = modDepth[i] * ki[i] * ki[i - 2]; rSpec[i] = gzi[i] * v * v; }
+        { double v = modDepth[45] * ki[43]; rSpec[45] = gzi[45] * v * v; }
+        { double v = modDepth[46] * ki[44]; rSpec[46] = gzi[46] * v * v; }
 
         double totalR = 0.0;
         for (int i = 0; i < 47; i++) totalR += rSpec[i];
@@ -334,6 +334,16 @@ public static class RoughnessDw
         for (int i = 0; i < 47; i++) result[i] = rSpec[i];
         result[47] = totalR;
         return result;
+
+        } // end try
+        finally
+        {
+            ArrayPool<Complex>.Shared.Return(spec2);
+            ArrayPool<Complex>.Shared.Return(specW);
+            ArrayPool<double>.Shared.Return(module);
+            ArrayPool<double>.Shared.Return(specDb);
+            ArrayPool<Complex>.Shared.Return(exc);
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Mosqito.SqMetrics.Loudness;
 
 /// <summary>
@@ -11,9 +13,12 @@ namespace Mosqito.SqMetrics.Loudness;
 /// </summary>
 internal static class MainLoudness
 {
-    private const int NRap  = 8;   // number of RAP ranges
-    private const int NLow  = 11;  // number of low-frequency bands (DLL applies)
-    private const int NBands = 20; // number of critical band groups
+    private const int NRap   = 8;   // number of RAP ranges
+    private const int NLow   = 11;  // number of low-frequency bands (DLL applies)
+    private const int NBands = 20;  // number of critical band groups
+
+    // ln(10)/10 — converts dB ratios to natural exponent: 10^(x/10) = exp(x * Ln10Over10)
+    private const double Ln10Over10 = 0.23025850929940457;
 
     /// <summary>
     /// Computes core loudness from a 1/3-octave band spectrum.
@@ -26,6 +31,7 @@ internal static class MainLoudness
     /// <returns>
     /// Core loudness array <c>nm</c>, length 21 (20 critical bands + 1 zero padding).
     /// </returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static double[] Compute(ReadOnlySpan<double> specThird, string fieldType = "free")
     {
         // ISO 532-1 A.3: levels in first 11 bands must not exceed 120 dB.
@@ -35,14 +41,12 @@ internal static class MainLoudness
                     "1/3 octave band level exceeds 120 dB for which the Zwicker method is no longer valid.");
 
         // --- Step 1: Equal-loudness correction for bands 0-10 (below 315 Hz) ---
-        // For each of the 11 low-frequency bands, find the dll correction to apply.
-        double[] dllResult = new double[NLow];
+        Span<double> dllResult = stackalloc double[NLow];
 
         for (int band = 0; band < NLow; band++)
         {
             double spLevel = band < specThird.Length ? specThird[band] : 0.0;
-            // Find which RAP range this band falls in (first RAP where spec > RAP - dll)
-            double dll = ZwickerData.Dll[0, band]; // default to lowest range
+            double dll = ZwickerData.Dll[0, band];
             for (int r = 0; r < NRap - 1; r++)
             {
                 double threshold = ZwickerData.Rap[r] - ZwickerData.Dll[r, band];
@@ -51,7 +55,6 @@ internal static class MainLoudness
                 else
                     break;
             }
-            // If level exceeds highest threshold, dll = 0
             {
                 double threshold = ZwickerData.Rap[NRap - 1] - ZwickerData.Dll[NRap - 1, band];
                 if (spLevel > threshold) dll = 0.0;
@@ -59,73 +62,70 @@ internal static class MainLoudness
             dllResult[band] = dll;
         }
 
-        // xp = dll_result + spec_third_aux (eq-loudness corrected levels for first 11 bands)
-        // Then compute intensities for first 11 bands
-        double[] xp = new double[NLow];
+        // xp = dll_result + spec_third, then ti = exp(xp * ln10/10)
+        Span<double> xp = stackalloc double[NLow];
         for (int b = 0; b < NLow; b++)
             xp[b] = dllResult[b] + (b < specThird.Length ? specThird[b] : 0.0);
 
-        // ti = 10^(xp/10)
-        double[] ti = new double[NLow];
+        Span<double> ti = stackalloc double[NLow];
         for (int b = 0; b < NLow; b++)
-            ti[b] = Math.Pow(10.0, xp[b] / 10.0);
+            ti[b] = Math.Exp(xp[b] * Ln10Over10);
 
-        // --- Step 2: Group first 11 bands into 3 critical bands (GI → LCB) ---
-        double[] gi  = new double[3];
+        // --- Step 2: Group first 11 bands into 3 critical bands ---
+        Span<double> gi = stackalloc double[3];
         gi[0] = ti[0] + ti[1] + ti[2] + ti[3] + ti[4] + ti[5];
         gi[1] = ti[6] + ti[7] + ti[8];
         gi[2] = ti[9] + ti[10];
 
-        double[] lcb = new double[3];
+        Span<double> lcb = stackalloc double[3];
+        lcb.Clear();
         for (int k = 0; k < 3; k++)
             if (gi[k] > 0.0) lcb[k] = 10.0 * Math.Log10(gi[k]);
 
         // --- Step 3: Compute main loudness for 20 critical bands ---
-        // LE = spec_third[8:] (20 values starting from band index 8)
-        double[] le = new double[NBands];
+        Span<double> le = stackalloc double[NBands];
         for (int i = 0; i < NBands; i++)
             le[i] = i + 8 < specThird.Length ? specThird[i + 8] : 0.0;
 
-        // Replace first 3 with LCB
         le[0] = lcb[0];
         le[1] = lcb[1];
         le[2] = lcb[2];
 
-        // Apply A0 (ear transmission)
-        for (int i = 0; i < NBands; i++)
-            le[i] -= ZwickerData.A0[i];
+        double[] a0  = ZwickerData.A0;
+        for (int i = 0; i < NBands; i++) le[i] -= a0[i];
 
-        // Apply DDF for diffuse field
         if (fieldType == "diffuse")
-            for (int i = 0; i < NBands; i++)
-                le[i] += ZwickerData.Ddf[i];
+        {
+            double[] ddf = ZwickerData.Ddf;
+            for (int i = 0; i < NBands; i++) le[i] += ddf[i];
+        }
 
-        // Compute core loudness nm for each critical band
-        double[] nm = new double[NBands + 1]; // +1 zero padding (appended in Python)
+        double[]  ltqArr    = ZwickerData.Ltq10Pow; // precomputed: 0.0635*10^(0.025*Ltq[i])
+        int[]     ltqInt    = ZwickerData.Ltq;
+        double[]  dcb       = ZwickerData.Dcb;
+        double[]  nm        = new double[NBands + 1]; // escapes; last element stays 0
+
         const double s = 0.25;
 
         for (int i = 0; i < NBands; i++)
         {
-            double ltq = ZwickerData.Ltq[i];
+            int ltq = ltqInt[i];
             if (le[i] > ltq)
             {
-                double leCorr = le[i] - ZwickerData.Dcb[i];
-                double mp1 = 0.0635 * Math.Pow(10.0, 0.025 * ltq);
-                double mp2 = Math.Pow(1.0 - s + s * Math.Pow(10.0, 0.1 * (leCorr - ltq)), 0.25) - 1.0;
-                double n = mp1 * mp2;
+                double leCorr = le[i] - dcb[i];
+                double mp1    = ltqArr[i];  // 0.0635 * 10^(0.025*ltq), precomputed
+                double inner  = 1.0 - s + s * Math.Exp((leCorr - ltq) * Ln10Over10);
+                double mp2    = Math.Sqrt(Math.Sqrt(inner)) - 1.0; // x^0.25 = sqrt(sqrt(x))
+                double n      = mp1 * mp2;
                 nm[i] = Math.Max(0.0, n);
             }
-            // else nm[i] remains 0
         }
 
         // Correction of specific loudness in the lowest critical band
-        // korry = 0.4 + 0.32 * nm[0]^0.2
         double korry = 0.4 + 0.32 * Math.Pow(nm[0], 0.2);
         if (korry <= 1.0) nm[0] *= korry;
 
-        // Last element is 0 (padding, matches numpy.append)
         nm[NBands] = 0.0;
-
         return nm;
     }
 
