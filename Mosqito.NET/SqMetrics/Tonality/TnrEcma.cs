@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using Mosqito.Dsp;
 using Mosqito.Io;
 using Mosqito.SoundLevelMeter;
@@ -392,17 +393,24 @@ public static class TnrEcma
 
         if (nSeg == 0) return (Array.Empty<TonalityResult>(), timeAxis);
 
-        // Compute spectra for all segments
+        // freqAxis depends only on fs and nSamp, not signal content — precompute analytically
+        int nHalf = nSamp / 2;
+        double fScale = (double)fs / nSamp;
+        double[] freqAxis = new double[nHalf];
+        for (int i = 0; i < nHalf; i++) freqAxis[i] = (i + 1) * fScale;
+
+        // Compute spectra for all segments (parallel — CompSpectrum is thread-safe)
         var allSpecDb = new double[nSeg][];
-        double[]? freqAxis = null;
-        double[] seg = new double[nSamp];
-        for (int s = 0; s < nSeg; s++)
-        {
-            for (int i = 0; i < nSamp; i++) seg[i] = blockArray[i, s];
-            var (sp, fa) = CompSpectrum.Compute(seg, fs, db: true);
-            allSpecDb[s] = sp;
-            freqAxis ??= fa;
-        }
+        Parallel.For(0, nSeg,
+            () => new double[nSamp],
+            (s, pls, segBuf) =>
+            {
+                for (int i = 0; i < nSamp; i++) segBuf[i] = blockArray[i, s];
+                var (sp, __) = CompSpectrum.Compute(segBuf, fs, db: true);
+                allSpecDb[s] = sp;
+                return segBuf;
+            },
+            _ => { });
 
         // Build filtered (89.1–11200 Hz) freq axis + spectra [nSeg, nfreqs]
         int nFull = freqAxis!.Length;
@@ -425,37 +433,40 @@ public static class TnrEcma
         // Compute joint scrambled smooth [nSeg, nfreqs]
         double[,] smooth = TonalityInternals.ComputeScrambledSmooth(filtSpecAll, filtFreqs);
 
-        // Build a per-segment smooth array on the FULL freq axis for MainCalcWithSmooth
+        // Per-segment MainCalcWithSmooth — parallel; each thread owns its fullSmooth buffer
         var results = new TonalityResult[nSeg];
-        double[] fullSmooth = new double[nFull];
-        for (int s = 0; s < nSeg; s++)
-        {
-            // Map smooth back onto full freq axis (bins outside filter range get -200)
-            Array.Fill(fullSmooth, -200.0);
-            for (int k = 0; k < nfreqs; k++)
-                fullSmooth[filtIdx[k]] = smooth[s, k];
-
-            var result = MainCalcWithSmooth(allSpecDb[s], freqAxis, fullSmooth);
-            if (!prominentOnly) { results[s] = result; continue; }
-
-            var filtVals  = new List<double>();
-            var filtProm  = new List<bool>();
-            var filtFreqsOut = new List<double>();
-            for (int i = 0; i < result.Prominence.Length; i++)
-                if (result.Prominence[i])
-                {
-                    filtVals.Add(result.Values[i]);
-                    filtProm.Add(true);
-                    filtFreqsOut.Add(result.ToneFrequencies[i]);
-                }
-            results[s] = new TonalityResult
+        Parallel.For(0, nSeg,
+            () => new double[nFull],
+            (s, _, fullSmooth) =>
             {
-                TTotal = result.TTotal,
-                Values = filtVals.ToArray(),
-                Prominence = filtProm.ToArray(),
-                ToneFrequencies = filtFreqsOut.ToArray()
-            };
-        }
+                Array.Fill(fullSmooth, -200.0);
+                for (int k = 0; k < nfreqs; k++)
+                    fullSmooth[filtIdx[k]] = smooth[s, k];
+
+                var result = MainCalcWithSmooth(allSpecDb[s], freqAxis, fullSmooth);
+                if (!prominentOnly) { results[s] = result; return fullSmooth; }
+
+                var filtVals     = new List<double>();
+                var filtProm     = new List<bool>();
+                var filtFreqsOut = new List<double>();
+                for (int i = 0; i < result.Prominence.Length; i++)
+                    if (result.Prominence[i])
+                    {
+                        filtVals.Add(result.Values[i]);
+                        filtProm.Add(true);
+                        filtFreqsOut.Add(result.ToneFrequencies[i]);
+                    }
+                results[s] = new TonalityResult
+                {
+                    TTotal = result.TTotal,
+                    Values = filtVals.ToArray(),
+                    Prominence = filtProm.ToArray(),
+                    ToneFrequencies = filtFreqsOut.ToArray()
+                };
+                return fullSmooth;
+            },
+            _ => { });
+
         return (results, timeAxis);
     }
 }
