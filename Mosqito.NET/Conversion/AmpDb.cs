@@ -30,11 +30,13 @@ public static class AmpDb
     /// <summary>
     /// Converts a single dB value to linear amplitude: ref * 10^(dB/20).
     /// </summary>
+    private const double Ln10Over20 = 0.11512925464970229; // ln(10)/20
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double Db2Amp(double dB, double reference = 1.0)
     {
         if (reference == 0.0) throw new ArgumentException("Reference must not be zero.", nameof(reference));
-        return Math.Pow(10.0, 0.05 * dB) * reference;
+        return Math.Exp(dB * Ln10Over20) * reference;
     }
 
     /// <summary>
@@ -78,7 +80,7 @@ public static class AmpDb
         if (output.Length < dB.Length) throw new ArgumentException("Output span is too short.", nameof(output));
 
         for (int i = 0; i < dB.Length; i++)
-            output[i] = Math.Pow(10.0, 0.05 * dB[i]) * reference;
+            output[i] = Math.Exp(dB[i] * Ln10Over20) * reference;
     }
 
     /// <summary>
@@ -102,11 +104,13 @@ public static class AmpDb
         return 10.0 * Math.Log10(power / reference);
     }
 
+    private const double Ln10Over10 = 0.23025850929940457; // ln(10)/10
+
     /// <summary>ref * 10^(dB/10) — reverse of <see cref="Power2Db"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double Db2Power(double dB, double reference = 1.0)
     {
         if (reference == 0.0) throw new ArgumentException("Reference must not be zero.", nameof(reference));
-        return Math.Pow(10.0, 0.1 * dB) * reference;
+        return Math.Exp(dB * Ln10Over10) * reference;
     }
 }

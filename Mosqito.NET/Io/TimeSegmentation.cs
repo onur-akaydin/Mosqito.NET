@@ -1,3 +1,5 @@
+using System.Threading.Tasks;
+
 namespace Mosqito.Io;
 
 /// <summary>
@@ -9,19 +11,6 @@ public static class TimeSegmentation
     /// <summary>
     /// Segments a 1-D signal into overlapping blocks.
     /// </summary>
-    /// <param name="sig">Input signal (1-D).</param>
-    /// <param name="fs">Sampling frequency [Hz].</param>
-    /// <param name="nPerSeg">Block length in samples. Default 2048.</param>
-    /// <param name="noOverlap">
-    /// Number of overlapping samples between adjacent blocks.
-    /// If null, defaults to <c>nPerSeg / 2</c>. Set to 0 for no overlap (step = nPerSeg).
-    /// </param>
-    /// <param name="isEcma">
-    /// If true, zero-pads <c>nPerSeg</c> samples at the start (ECMA-418-2, Formula 16).
-    /// </param>
-    /// <returns>
-    /// (<c>blockArray</c> of shape [nPerSeg, nSegments], <c>timeAxis</c> of length nSegments).
-    /// </returns>
     public static (double[,] blockArray, double[] timeAxis) Segment(
         ReadOnlySpan<double> sig,
         double fs,
@@ -30,29 +19,28 @@ public static class TimeSegmentation
         bool isEcma = false)
     {
         int noverlap = noOverlap ?? (nPerSeg / 2);
-        if (noverlap == 0) noverlap = nPerSeg; // step = nPerSeg (Python behaviour for noverlap=0)
+        if (noverlap == 0) noverlap = nPerSeg;
 
-        // ECMA path: prepend nPerSeg zeros
-        double[] sigArr;
+        // ECMA path: prepend nPerSeg zeros into a new array.
+        // Non-ECMA: operate directly on the original span (no copy).
+        double[]? ecmaBuf = null;
+        ReadOnlySpan<double> src;
         if (isEcma)
         {
-            sigArr = new double[sig.Length + nPerSeg];
-            sig.CopyTo(sigArr.AsSpan(nPerSeg));
+            ecmaBuf = new double[sig.Length + nPerSeg];
+            sig.CopyTo(ecmaBuf.AsSpan(nPerSeg));
+            src = ecmaBuf;
         }
         else
         {
-            sigArr = sig.ToArray();
+            src = sig;
         }
-        int n = sigArr.Length;
 
-        // Build time axis for the (possibly padded) signal
-        double[] time = new double[n];
-        for (int i = 0; i < n; i++) time[i] = i / fs;
+        int n = src.Length;
 
         // Count blocks
         int nBlocks = 0;
-        int l = 0;
-        while (l * noverlap <= n - nPerSeg) { nBlocks++; l++; }
+        { int l = 0; while (l * noverlap <= n - nPerSeg) { nBlocks++; l++; } }
 
         if (nBlocks == 0)
             return (new double[nPerSeg, 0], Array.Empty<double>());
@@ -60,16 +48,48 @@ public static class TimeSegmentation
         double[,] blockArray = new double[nPerSeg, nBlocks];
         double[] timeArray   = new double[nBlocks];
 
-        for (int block = 0; block < nBlocks; block++)
-        {
-            int start = block * noverlap;
-            for (int s = 0; s < nPerSeg; s++)
-                blockArray[s, block] = sigArr[start + s];
+        // Compute per-block mean time via closed-form: mean of [start .. start+nPerSeg-1] / fs
+        // = (start + (nPerSeg-1)/2.0) / fs
+        double halfSeg = (nPerSeg - 1) * 0.5;
 
-            // Mean of the time values for this block
-            double tSum = 0.0;
-            for (int s = 0; s < nPerSeg; s++) tSum += time[start + s];
-            timeArray[block] = tSum / nPerSeg;
+        // Parallelize block extraction — each block writes to a disjoint column.
+        // Pass src as array for closure (span cannot be captured).
+        if (isEcma)
+        {
+            double[] srcArr = ecmaBuf!;
+            Parallel.For(0, nBlocks, block =>
+            {
+                int start = block * noverlap;
+                timeArray[block] = (start + halfSeg) / fs;
+                for (int s = 0; s < nPerSeg; s++)
+                    blockArray[s, block] = srcArr[start + s];
+            });
+        }
+        else
+        {
+            // Pin the span via ToArray only if parallelism is worthwhile (≥4 blocks),
+            // otherwise do a single serial pass to avoid the allocation.
+            if (nBlocks >= 4)
+            {
+                double[] srcArr = sig.ToArray();
+                Parallel.For(0, nBlocks, block =>
+                {
+                    int start = block * noverlap;
+                    timeArray[block] = (start + halfSeg) / fs;
+                    for (int s = 0; s < nPerSeg; s++)
+                        blockArray[s, block] = srcArr[start + s];
+                });
+            }
+            else
+            {
+                for (int block = 0; block < nBlocks; block++)
+                {
+                    int start = block * noverlap;
+                    timeArray[block] = (start + halfSeg) / fs;
+                    for (int s = 0; s < nPerSeg; s++)
+                        blockArray[s, block] = src[start + s];
+                }
+            }
         }
 
         return (blockArray, timeArray);
