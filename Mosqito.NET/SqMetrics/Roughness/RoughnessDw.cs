@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Numerics;
+using System.Threading.Tasks;
 using Mosqito.Conversion;
 using Mosqito.Dsp;
 using Mosqito.Io;
@@ -71,21 +72,20 @@ public static class RoughnessDw
 
         double[] R    = new double[nSeg];
         double[,] RSpec = new double[47, nSeg];
-        double[] segBuf = new double[nSamples];
 
-        for (int seg = 0; seg < nSeg; seg++)
-        {
-            for (int s = 0; s < nSamples; s++) segBuf[s] = blocks[s, seg];
-
-            // Compute Blackman-windowed COMPLEX spectrum (one-sided).
-            // Python passes the complex FFT to _roughness_dw_main_calc to preserve
-            // phase information — this is essential for accurate excitation patterns.
-            Complex[] specComplex = ComputeComplexSpectrum(segBuf, nperseg);
-
-            double[] r = MainCalc(specComplex, freqAxis, fs, gzi, hWeight);
-            R[seg] = r[47]; // last element is overall R; first 47 are R_spec
-            for (int b = 0; b < 47; b++) RSpec[b, seg] = r[b];
-        }
+        // Parallel over segments — MainCalc is thread-safe (rents all temporaries internally)
+        Parallel.For(0, nSeg,
+            () => new double[nSamples],
+            (seg, _, segBuf) =>
+            {
+                for (int s = 0; s < nSamples; s++) segBuf[s] = blocks[s, seg];
+                Complex[] specComplex = ComputeComplexSpectrum(segBuf, nperseg);
+                double[] r = MainCalc(specComplex, freqAxis, fs, gzi, hWeight);
+                R[seg] = r[47];
+                for (int b = 0; b < 47; b++) RSpec[b, seg] = r[b];
+                return segBuf;
+            },
+            _ => { });
 
         return new RoughnessDwResult(R, RSpec, BarkAxisCache, timeAxis);
     }
@@ -143,16 +143,12 @@ public static class RoughnessDw
         int m = spec.Length;  // one-sided length
         int n = 2 * m;        // two-sided
 
-        // Rent all large temporary buffers from the pool.
-        // Fourier.Forward/Inverse requires exact-length arrays, so we track sizes carefully.
+        // Rent shared read-only temporaries from the pool.
         Complex[] spec2      = ArrayPool<Complex>.Shared.Rent(n);
         Complex[] specW      = ArrayPool<Complex>.Shared.Rent(n);
         double[]  module     = ArrayPool<double>.Shared.Rent(m);
         double[]  specDb     = ArrayPool<double>.Shared.Rent(m);
-        Complex[] exc        = ArrayPool<Complex>.Shared.Rent(n);
-        // ifftBuf and envBuf must be exactly n for in-place FFT — allocate normally.
-        Complex[] ifftBuf    = new Complex[n];
-        Complex[] envBuf     = new Complex[n];
+        // exc, ifftBuf, envBuf are moved to thread-local inside the parallel channel loop.
 
         try
         {
@@ -245,63 +241,68 @@ public static class RoughnessDw
             }
         }
 
-        // Per-channel processing
+        // Per-channel processing — parallel over 47 channels, thread-local FFT buffers.
+        // MathNet.Fourier requires exact-length arrays so we allocate per thread (once, not per ch).
         double[,] hBP      = new double[nChannel, n];
         double[]  modDepth = new double[nChannel];
 
-        for (int ch = 0; ch < nChannel; ch++)
-        {
-            // Build excitation spectrum for this channel
-            for (int i = 0; i < n; i++) exc[i] = Complex.Zero;
-            for (int j = 0; j < nAud; j++)
+        Parallel.For(0, nChannel,
+            () => (exc: new Complex[n], ifft: new Complex[n], env: new Complex[n]),
+            (ch, _, local) =>
             {
-                int ind = audibleIdx[j];
-                double ampl;
-                if (chLow[j] == ch || chHigh[j] == ch)
-                    ampl = 1.0;
-                else if (chHigh[j] > ch)
-                    ampl = module[ind] > 0 ? slopes[j, ch + 1] / module[ind] : 0.0;
-                else
-                    ampl = module[ind] > 0 ? slopes[j, ch - 1] / module[ind] : 0.0;
+                Complex[] excL  = local.exc;
+                Complex[] ifftL = local.ifft;
+                Complex[] envL  = local.env;
 
-                exc[ind] = ampl * specW[ind];
-            }
+                // Build excitation spectrum
+                Array.Clear(excL, 0, n);
+                for (int j = 0; j < nAud; j++)
+                {
+                    int ind = audibleIdx[j];
+                    double ampl;
+                    if (chLow[j] == ch || chHigh[j] == ch)
+                        ampl = 1.0;
+                    else if (chHigh[j] > ch)
+                        ampl = module[ind] > 0 ? slopes[j, ch + 1] / module[ind] : 0.0;
+                    else
+                        ampl = module[ind] > 0 ? slopes[j, ch - 1] / module[ind] : 0.0;
+                    excL[ind] = ampl * specW[ind];
+                }
 
-            // IFFT → temporal specific excitation (reuse ifftBuf, exact length n)
-            exc.AsSpan(0, n).CopyTo(ifftBuf);
-            MathNet.Numerics.IntegralTransforms.Fourier.Inverse(
-                ifftBuf,
-                MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
+                excL.AsSpan(0, n).CopyTo(ifftL);
+                MathNet.Numerics.IntegralTransforms.Fourier.Inverse(
+                    ifftL,
+                    MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
 
-            double h0 = 0.0;
-            for (int i = 0; i < n; i++)
-            {
-                double v = n * ifftBuf[i].Real;
-                hBP[ch, i] = v;
-                h0 += Math.Abs(v);
-            }
-            h0 /= n;
+                double h0 = 0.0;
+                for (int i = 0; i < n; i++)
+                {
+                    double v = n * ifftL[i].Real;
+                    hBP[ch, i] = v;
+                    h0 += Math.Abs(v);
+                }
+                h0 /= n;
 
-            // Envelope spectrum: FFT of (|temporal_excitation| - h0)
-            for (int i = 0; i < n; i++) envBuf[i] = new Complex(Math.Abs(hBP[ch, i]) - h0, 0.0);
-            MathNet.Numerics.IntegralTransforms.Fourier.Forward(
-                envBuf,
-                MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
+                for (int i = 0; i < n; i++) envL[i] = new Complex(Math.Abs(hBP[ch, i]) - h0, 0.0);
+                MathNet.Numerics.IntegralTransforms.Fourier.Forward(
+                    envL,
+                    MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
 
-            for (int i = 0; i < n; i++) envBuf[i] *= hWeight[ch, i];
+                for (int i = 0; i < n; i++) envL[i] *= hWeight[ch, i];
 
-            MathNet.Numerics.IntegralTransforms.Fourier.Inverse(
-                envBuf,
-                MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
-            for (int i = 0; i < n; i++) hBP[ch, i] = 2.0 * envBuf[i].Real;
+                MathNet.Numerics.IntegralTransforms.Fourier.Inverse(
+                    envL,
+                    MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
+                for (int i = 0; i < n; i++) hBP[ch, i] = 2.0 * envL[i].Real;
 
-            double rms2 = 0.0;
-            for (int i = 0; i < n; i++) { double v = hBP[ch, i]; rms2 += v * v; }
-            double hBpRms = Math.Sqrt(rms2 / n);
+                double rms2 = 0.0;
+                for (int i = 0; i < n; i++) { double v = hBP[ch, i]; rms2 += v * v; }
+                double hBpRms = Math.Sqrt(rms2 / n);
+                if (h0 > 0.0) modDepth[ch] = Math.Min(hBpRms / h0, 1.0);
 
-            if (h0 > 0.0)
-                modDepth[ch] = Math.Min(hBpRms / h0, 1.0);
-        }
+                return local;
+            },
+            _ => { });
 
         // Cross-correlation between channels i and i+2
         double[] ki = new double[47];
@@ -342,7 +343,6 @@ public static class RoughnessDw
             ArrayPool<Complex>.Shared.Return(specW);
             ArrayPool<double>.Shared.Return(module);
             ArrayPool<double>.Shared.Return(specDb);
-            ArrayPool<Complex>.Shared.Return(exc);
         }
     }
 
@@ -358,15 +358,15 @@ public static class RoughnessDw
     /// </summary>
     private static Complex[] ComputeComplexSpectrum(double[] seg, int nfft)
     {
-        // Build and normalise window
-        double[] win = new double[nfft];
-        Windows.FillBlackman(win);
-        Windows.NormaliseBySumInPlace(win);
+        // Use cached Blackman window + inline normFactor (avoids mutating shared cache array)
+        double[] win = Windows.Blackman(nfft);
+        double winSum = Windows.Sum(win);
+        double normFactor = winSum > 0.0 ? 1.0 / winSum : 1.0;
 
-        // Apply window
+        // Apply window with inline normalisation (no mutation of shared cached window)
         Complex[] buf = new Complex[nfft];
         int copyLen = Math.Min(nfft, seg.Length);
-        for (int i = 0; i < copyLen; i++) buf[i] = new Complex(seg[i] * win[i], 0.0);
+        for (int i = 0; i < copyLen; i++) buf[i] = new Complex(seg[i] * win[i] * normFactor, 0.0);
 
         // Forward FFT (AsymmetricScaling = no scaling on forward, 1/N on inverse)
         MathNet.Numerics.IntegralTransforms.Fourier.Forward(
