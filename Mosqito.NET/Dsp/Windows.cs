@@ -78,13 +78,9 @@ public static class Windows
     /// <summary>Fills <paramref name="output"/> with ones (rectangular window).</summary>
     public static void FillRectangular(Span<double> output) => output.Fill(1.0);
 
-    /// <summary>Allocates and returns a rectangular window of length <paramref name="n"/>.</summary>
-    public static double[] Rectangular(int n)
-    {
-        double[] w = new double[n];
-        w.AsSpan().Fill(1.0);
-        return w;
-    }
+    /// <summary>Returns a cached rectangular window of length <paramref name="n"/> (read-only).</summary>
+    public static double[] Rectangular(int n) =>
+        Cached(n, 4, static len => { var w = new double[len]; w.AsSpan().Fill(1.0); return w; });
 
     // ------------------------------------------------------------------
     // Tukey (cosine-tapered)

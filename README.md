@@ -102,6 +102,43 @@ All functions are available through the `Sq` static façade class. Each function
 | `Sq.SiiAnsi` | ANSI S3.5 Speech Intelligibility Index from signal |
 | `Sq.SiiAnsiFreq` | ANSI S3.5 SII from spectrum |
 
+## Performance
+
+All public APIs (except Loudness, which was optimised earlier) were accelerated via `Parallel.For`, SIMD (`System.Numerics.Vector<double>`), `ArrayPool<T>`, plan caches, and allocation removal in commits M1–M8. Numbers below are from BenchmarkDotNet on an AMD Ryzen 7 4800H (8 cores / 16 threads), .NET 8 AVX2, comparing the pre-optimisation baseline to the current build.
+
+### Roughness
+
+| Benchmark | Before | After | Speedup | Alloc Δ |
+|---|---:|---:|:---:|:---:|
+| RoughnessDw (synthetic) | 3,732.9 ms | 687.4 ms | **5.4×** | — |
+| RoughnessDw (WAV file) | 11,338.7 ms | 2,216.8 ms | **5.1×** | — |
+| RoughnessDwFreq (synthetic) | 749.3 ms | 150.7 ms | **5.0×** | — |
+| RoughnessDwFreq (WAV file) | 772.8 ms | 150.8 ms | **5.1×** | — |
+| RoughnessEcma (synthetic) | 1,977.0 ms | 464.4 ms | **4.3×** | −24% |
+| RoughnessEcma (WAV file) | 4,676.5 ms | 979.3 ms | **4.8×** | −28% |
+
+### Sharpness
+
+| Benchmark | Before | After | Speedup | Alloc Δ |
+|---|---:|---:|:---:|:---:|
+| SharpnessDinSt (synthetic) | 30.73 ms | 6.14 ms | **5.0×** | −63% |
+| SharpnessDinSt (WAV file) | 154.82 ms | 30.31 ms | **5.1×** | −61% |
+| SharpnessDinTv (synthetic) | 40.95 ms | 14.79 ms | **2.8×** | −6% |
+| SharpnessDinTv (WAV file) | 217.34 ms | 84.07 ms | **2.6×** | −9% |
+
+### Tonality (TNR / PR) and Speech Intelligibility (SII)
+
+Single-call benchmarks are FFT-dominated; the parallel gains apply to the `PerSeg` variants on longer signals. Allocation reductions from `stackalloc` locals and removed LINQ are present in all call paths.
+
+| Benchmark | Before | After | Alloc Δ |
+|---|---:|---:|:---:|
+| TnrEcmaSt (synthetic) | 34.17 ms | 34.20 ms | −18% |
+| TnrEcmaSt (WAV file) | 33.92 ms | 35.45 ms | −19% |
+| PrEcmaSt (synthetic) | 34.15 ms | 34.44 ms | −18% |
+| PrEcmaSt (WAV file) | 34.54 ms | 34.36 ms | −19% |
+| SiiAnsi (synthetic) | 31.30 ms | 30.19 ms | −20% |
+| SiiAnsi (WAV file) | 240.46 ms | 239.31 ms | −15% |
+
 ## Dependencies
 
 - [MathNet.Numerics](https://numerics.mathdotnet.com/) 5.0 — numerical routines (FFT, interpolation, filtering)
