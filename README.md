@@ -104,7 +104,21 @@ All functions are available through the `Sq` static façade class. Each function
 
 ## Performance
 
-All public APIs (except Loudness, which was optimised earlier) were accelerated via `Parallel.For`, SIMD (`System.Numerics.Vector<double>`), `ArrayPool<T>`, plan caches, and allocation removal in commits M1–M8. Numbers below are from BenchmarkDotNet on an AMD Ryzen 7 4800H (8 cores / 16 threads), .NET 8 AVX2, comparing the pre-optimisation baseline to the current build.
+All public APIs were accelerated via `Parallel.For`, SIMD (`System.Numerics.Vector<double>`), `ArrayPool<T>`, plan caches, and allocation removal across two optimisation passes. Numbers below are from BenchmarkDotNet on an AMD Ryzen 7 4800H (8 cores / 16 threads), .NET 8 AVX2, comparing the unoptimised initial implementation to the current build.
+
+### Loudness
+
+| Benchmark | Before | After | Speedup | Alloc Δ |
+|---|---:|---:|:---:|:---:|
+| LoudnessZwst (synthetic) | 29.94 ms | 5.70 ms | **5.3×** | −65% |
+| LoudnessZwst (WAV file) | 312.66 ms | 61.45 ms | **5.1×** | −69% |
+| LoudnessZwstFreq (WAV file) | 572.06 ms | 3.57 ms | **160×** | −99% |
+| LoudnessZwtv (synthetic) | 39.65 ms | 15.08 ms | **2.6×** | −7% |
+| LoudnessZwtv (WAV file) | 475.30 ms | 201.90 ms | **2.4×** | — |
+| LoudnessEcma (synthetic) | 84.96 ms | 34.29 ms | **2.5×** | −44% |
+| LoudnessEcma (WAV file) | 1,047.49 ms | 358.89 ms | **2.9×** | −18% |
+
+`LoudnessZwstFreq` gains are dominated by plan-caching the critical-band filter-bank design (previously recomputed from scratch on every call).
 
 ### Roughness
 
