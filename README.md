@@ -4,6 +4,20 @@ A complete, native C# (.NET 8) port of the [MoSQITo](https://github.com/Eomys/Mo
 
 Mosqito.NET implements the same sound quality metrics as the original Python library — loudness, roughness, sharpness, tonality, and speech intelligibility — with a flat `Sq.*` façade that mirrors MoSQITo's public API.
 
+## Acknowledgements
+
+Heartfelt thanks to the authors, maintainers, and contributors of the original MoSQITo Python library — in particular the team at [Eomys](https://eomys.com) — for their open, well-documented reference implementations of ISO 532-1, ECMA-418-2, DIN 45692, ANSI S3.5, ECMA-74, and the Daniel & Weber roughness model. Mosqito.NET would not exist without their work, and all scientific credit for the underlying algorithms belongs to them.
+
+## Disclaimer — AI-assisted port
+
+Mosqito.NET was produced largely with AI assistance (Claude), working from the original Python MoSQITo sources as the reference implementation. The test suite (65 ported unit tests plus 168 head-to-head comparisons against Python golden outputs, all passing) is the primary guarantor of correctness, but users should still validate results against their own reference data before relying on Mosqito.NET in production or safety-critical contexts. Bug reports and corrections are very welcome.
+
+## Attribution, trademark, and endorsement
+
+- **Mosqito.NET is an independent port and is not affiliated with or endorsed by the MoSQITo project or Eomys.**
+- "MoSQITo" is a name used by the original project; "Mosqito.NET" refers only to this C# port and is not a claim over the original name.
+- The Apache-2.0 license (§6) does not grant trademark rights; this port is licensed under Apache-2.0 for the code only.
+
 ## Standards implemented
 
 | Standard | Metric |

@@ -26,3 +26,10 @@ based on MoSQITo's reference implementations:
 
 - **MathNet.Numerics** — Copyright 2009-2024 Christoph Rüegg and contributors (MIT License)
 - **NAudio.Core** — Copyright 2020 Mark Heath (MIT License)
+
+## Non-Endorsement
+
+Mosqito.NET is an independent port and is not affiliated with or endorsed by the
+MoSQITo project or Eomys. "MoSQITo" is a name used by the original project;
+"Mosqito.NET" refers only to this C# port. The Apache-2.0 license (§6) does not
+grant trademark rights.
