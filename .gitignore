@@ -13,6 +13,9 @@ obj/
 *.nupkg
 *.snupkg
 
+# BenchmarkDotNet local run output
+BenchmarkDotNet.Artifacts/
+
 # OS
 .DS_Store
 Thumbs.db

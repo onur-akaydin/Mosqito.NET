@@ -15,7 +15,22 @@
     <Copyright>Original MoSQITo library: Copyright 2021 MoSQITo Developers (Apache-2.0). C# port: Mosqito.NET Contributors.</Copyright>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
+    <PackageId>Mosqito.NET</PackageId>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/onur-akaydin/Mosqito.NET</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/onur-akaydin/Mosqito.NET</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>psychoacoustics;sound-quality;loudness;sharpness;roughness;tonality;ISO532;ECMA-418</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
